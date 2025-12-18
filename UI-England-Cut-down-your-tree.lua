@@ -1057,237 +1057,122 @@ registerRight("Home", function(scroll)
         end
     end)
 end)
---===== UFO HUB X • Home – Model A V1 + AA1 (GLOBAL RUNNER) Auto Water Collect (WateringCan/Brick Click) =====
--- Header: "Auto Water Collect 💧"
--- Row1:   "Auto Water Collect"
+--===== UFO HUB X • Home – Model A V1 + AA1 =====
+-- System: Auto Water Collect 💧
 -- Logic:
---   1) หา Model "WateringCan" ที่ใกล้สุด
---   2) หา Brick ข้างใน (ชื่อ "Brick" ก่อน / ไม่เจอเอา BasePart ตัวแรก)
---   3) ไปกอด Brick
---   4) คลิกด้วย ClickDetector / ProximityPrompt
---   5) ถ้า "WateringCan" หายไป = เก็บน้ำแล้ว -> รอจนมันกลับมา แล้วทำต่อ
+-- workspace.Mutations.Normal.WateringCan
+--   → HitBox (ตำแหน่งยืน)
+--   → ClickDetector (กดเก็บน้ำ)
+--   → ถ้า WateringCan หาย = เก็บน้ำแล้ว (หยุด)
 
-----------------------------------------------------------------------
--- 1) AA1 RUNNER (GLOBAL)
-----------------------------------------------------------------------
+----------------------------------------------------------------
+-- 1) AA1 GLOBAL RUNNER
+----------------------------------------------------------------
 do
     local Players = game:GetService("Players")
     local Workspace = game:GetService("Workspace")
     local LP = Players.LocalPlayer
 
-    -- AA1 SAVE
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or {
-        get = function(_, _, d) return d end,
+        get = function(_,_,d) return d end,
         set = function() end
     }
 
-    local SYSTEM_NAME = "AutoWaterCollect_WateringCan"
-    local GAME_ID  = tonumber(game.GameId)  or 0
-    local PLACE_ID = tonumber(game.PlaceId) or 0
-    local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
+    local SYSTEM_NAME = "AutoWaterCollect"
+    local BASE = ("AA1/%s/%d/%d"):format(
+        SYSTEM_NAME,
+        tonumber(game.GameId) or 0,
+        tonumber(game.PlaceId) or 0
+    )
 
-    local function K(field) return BASE_SCOPE .. "/" .. field end
-    local function SaveGet(field, default)
-        local ok, v = pcall(function() return SAVE.get(K(field), default) end)
-        return ok and v or default
+    local function K(k) return BASE .. "/" .. k end
+    local function SaveGet(k,d)
+        local ok,v = pcall(function() return SAVE.get(K(k),d) end)
+        return ok and v or d
     end
-    local function SaveSet(field, value)
-        pcall(function() SAVE.set(K(field), value) end)
+    local function SaveSet(k,v)
+        pcall(function() SAVE.set(K(k),v) end)
     end
 
     local STATE = {
         Enabled = SaveGet("Enabled", false),
-
-        Range   = SaveGet("Range", 6),
-        StepSec = SaveGet("StepSec", 0.30),
-        YOffset = SaveGet("YOffset", 2.5),
-
-        ModelName = SaveGet("ModelName", "WateringCan"),
-        BrickName = SaveGet("BrickName", "Brick"),
-
-        ClickGap      = SaveGet("ClickGap", 0.10),
-        RespawnWait   = SaveGet("RespawnWait", 0.50), -- ตอน WateringCan หาย รอเช็คกลับมา
-        AfterCollect  = SaveGet("AfterCollect", 0.60), -- กันสแปมหลังคลิกจนมันหาย
+        StepSec = 0.35,
     }
 
-    local function getChar() return LP.Character end
-    local function getHumanoid()
-        local ch = getChar()
-        return ch and ch:FindFirstChildOfClass("Humanoid") or nil
-    end
     local function getHRP()
-        local ch = getChar()
-        return ch and ch:FindFirstChild("HumanoidRootPart") or nil
+        local c = LP.Character
+        return c and c:FindFirstChild("HumanoidRootPart")
     end
 
-    -- หา WateringCan ที่ใกล้สุด -> คืน brick + model
-    local function findNearestWateringCanBrick()
-        local hrp = getHRP()
-        if not hrp then return nil, nil end
-
-        local bestBrick, bestModel, bestDist = nil, nil, math.huge
-        local modelName = tostring(STATE.ModelName)
-        local brickName = tostring(STATE.BrickName)
-
-        for _, d in ipairs(Workspace:GetDescendants()) do
-            if d:IsA("Model") and d.Name == modelName then
-                -- หา Brick ตามชื่อก่อน
-                local brick = d:FindFirstChild(brickName, true)
-                if not (brick and brick:IsA("BasePart")) then
-                    -- ไม่เจอชื่อ -> เอา BasePart ตัวแรก
-                    for _, ch in ipairs(d:GetDescendants()) do
-                        if ch:IsA("BasePart") then
-                            brick = ch
-                            break
-                        end
-                    end
-                end
-
-                if brick and brick:IsA("BasePart") then
-                    local dist = (brick.Position - hrp.Position).Magnitude
-                    if dist < bestDist then
-                        bestDist = dist
-                        bestBrick = brick
-                        bestModel = d
-                    end
-                end
-            end
-        end
-
-        return bestBrick, bestModel
+    local function getWateringCan()
+        return Workspace:FindFirstChild("Mutations")
+            and Workspace.Mutations:FindFirstChild("Normal")
+            and Workspace.Mutations.Normal:FindFirstChild("WateringCan")
     end
 
-    local function goHug(part)
-        local hrp = getHRP()
-        local hum = getHumanoid()
-        if not (hrp and hum and part) then return false end
-
-        local range = tonumber(STATE.Range) or 6
-        if range < 2 then range = 2 end
-
-        local dist = (hrp.Position - part.Position).Magnitude
-        if dist <= range then return true end
-
-        local targetPos = part.Position + Vector3.new(0, tonumber(STATE.YOffset) or 2.5, 0)
-
-        pcall(function() hum:MoveTo(part.Position) end)
-        task.wait(0.05)
-        pcall(function() hrp.CFrame = CFrame.new(targetPos) end)
-
-        return false
-    end
-
-    local function tryClick(model, brick)
-        if not model then return false end
-
-        -- ClickDetector
-        local cd = model:FindFirstChildOfClass("ClickDetector")
-            or (brick and brick:FindFirstChildOfClass("ClickDetector"))
-
-        if cd and typeof(fireclickdetector) == "function" then
-            pcall(function() fireclickdetector(cd) end)
-            return true
-        end
-
-        -- ProximityPrompt (เผื่อบางแมพ)
-        local pp = model:FindFirstChildOfClass("ProximityPrompt")
-            or (brick and brick:FindFirstChildOfClass("ProximityPrompt"))
-
-        if pp and typeof(fireproximityprompt) == "function" then
-            pcall(function() fireproximityprompt(pp, 0) end)
-            return true
-        end
-
-        return false
-    end
-
-    local loopToken = 0
     local running = false
+    local token = 0
 
-    local function applyFromState()
-        if not STATE.Enabled then running = false return end
-        if running then return end
+    local function apply()
+        if not STATE.Enabled or running then return end
         running = true
-
-        loopToken += 1
-        local myToken = loopToken
+        token += 1
+        local my = token
 
         task.spawn(function()
-            local lastSawModel = false
-            local lastClickAt = 0
-
-            while STATE.Enabled and loopToken == myToken do
-                local brick, model = findNearestWateringCanBrick()
-
-                -- ✅ ถ้า WateringCan หาย = เก็บน้ำแล้ว -> รอจนมันกลับมา
-                if not model then
-                    if lastSawModel then
-                        -- เพิ่งหายไป = ถือว่าเก็บสำเร็จ
-                        task.wait(tonumber(STATE.AfterCollect) or 0.6)
-                    end
-                    lastSawModel = false
-                    task.wait(tonumber(STATE.RespawnWait) or 0.5)
-                else
-                    lastSawModel = true
-
-                    if brick then
-                        local hugged = goHug(brick)
-                        if hugged then
-                            local now = os.clock()
-                            local gap = tonumber(STATE.ClickGap) or 0.1
-                            if (now - lastClickAt) >= gap then
-                                local clicked = tryClick(model, brick)
-                                if clicked then
-                                    lastClickAt = now
-                                end
-                            end
-                        end
-                    end
-
-                    local step = tonumber(STATE.StepSec) or 0.30
-                    if step < 0.1 then step = 0.1 end
-                    task.wait(step)
+            while STATE.Enabled and token == my do
+                local can = getWateringCan()
+                if not can then
+                    -- ✅ WateringCan หาย = เก็บน้ำแล้ว
+                    STATE.Enabled = false
+                    SaveSet("Enabled", false)
+                    break
                 end
-            end
 
+                local hrp = getHRP()
+                local hitbox = can:FindFirstChild("HitBox")
+                if hrp and hitbox then
+                    hrp.CFrame = hitbox.CFrame + Vector3.new(0,2,0)
+                end
+
+                local cd = can:FindFirstChildOfClass("ClickDetector")
+                if cd and typeof(fireclickdetector) == "function" then
+                    fireclickdetector(cd)
+                end
+
+                task.wait(STATE.StepSec)
+            end
             running = false
         end)
     end
 
     local function SetEnabled(v)
-        v = v and true or false
-        STATE.Enabled = v
-        SaveSet("Enabled", v)
-
-        if v then
-            task.defer(applyFromState)
+        STATE.Enabled = v and true or false
+        SaveSet("Enabled", STATE.Enabled)
+        if STATE.Enabled then
+            task.defer(apply)
         else
-            loopToken += 1
+            token += 1
             running = false
         end
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
     _G.UFOX_AA1[SYSTEM_NAME] = {
-        state        = STATE,
-        apply        = applyFromState,
-        setEnabled   = SetEnabled,
-        getEnabled   = function() return STATE.Enabled == true end,
-        ensureRunner = function() task.defer(applyFromState) end,
-        saveGet      = SaveGet,
-        saveSet      = SaveSet,
+        getEnabled = function() return STATE.Enabled end,
+        setEnabled = SetEnabled,
+        ensure = function() task.defer(apply) end
     }
 
-    -- AA1 auto-run
-    task.defer(applyFromState)
+    task.defer(apply)
 end
 
-----------------------------------------------------------------------
--- 2) UI PART: Model A V1 in Home (Row เดียว) + sync
-----------------------------------------------------------------------
+----------------------------------------------------------------
+-- 2) UI • Model A V1 (Home)
+----------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
-    local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWaterCollect_WateringCan"]
+    local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWaterCollect"]
 
     local THEME = {
         GREEN = Color3.fromRGB(25,255,125),
@@ -1296,148 +1181,76 @@ registerRight("Home", function(scroll)
         BLACK = Color3.fromRGB(0,0,0),
     }
 
-    local function corner(ui, r)
+    local function corner(o,r)
         local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, r or 12)
-        c.Parent = ui
+        c.CornerRadius = UDim.new(0,r or 12)
+        c.Parent = o
     end
-
-    local function stroke(ui, th, col)
+    local function stroke(o)
         local s = Instance.new("UIStroke")
-        s.Thickness = th or 2.2
-        s.Color = col or THEME.GREEN
-        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        s.Parent = ui
+        s.Thickness = 2
+        s.Color = THEME.GREEN
+        s.Parent = o
     end
 
-    local function tween(o, p, d)
-        TweenService:Create(
-            o,
-            TweenInfo.new(d or 0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            p
-        ):Play()
+    for _,n in ipairs({"AWC_Header","AWC_Row1"}) do
+        local f = scroll:FindFirstChild(n)
+        if f then f:Destroy() end
     end
 
-    -- CLEANUP เฉพาะระบบนี้
-    for _, name in ipairs({"AWC_Header","AWC_Row1"}) do
-        local o = scroll:FindFirstChild(name)
-        if o then o:Destroy() end
-    end
-
-    -- UIListLayout (A V1) (มีได้ตัวเดียว)
-    local vlist = scroll:FindFirstChildOfClass("UIListLayout")
-    if not vlist then
-        vlist = Instance.new("UIListLayout")
-        vlist.Parent = scroll
-        vlist.Padding   = UDim.new(0, 12)
-        vlist.SortOrder = Enum.SortOrder.LayoutOrder
-    end
-    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-
-    -- base LayoutOrder dynamic (ตามมาตรฐานนาย)
     local base = 0
-    for _, ch in ipairs(scroll:GetChildren()) do
-        if ch:IsA("GuiObject") and ch ~= vlist then
-            base = math.max(base, ch.LayoutOrder or 0)
+    for _,c in ipairs(scroll:GetChildren()) do
+        if c:IsA("GuiObject") then
+            base = math.max(base, c.LayoutOrder or 0)
         end
     end
-    base = base + 1
 
-    -- HEADER (English + emoji)
     local header = Instance.new("TextLabel")
     header.Name = "AWC_Header"
     header.Parent = scroll
     header.BackgroundTransparency = 1
-    header.Size = UDim2.new(1, 0, 0, 36)
+    header.Size = UDim2.new(1,0,0,36)
     header.Font = Enum.Font.GothamBold
     header.TextSize = 16
     header.TextColor3 = THEME.WHITE
     header.TextXAlignment = Enum.TextXAlignment.Left
     header.Text = "Auto Water Collect 💧"
-    header.LayoutOrder = base
+    header.LayoutOrder = base + 1
 
-    local function makeRowSwitch(name, order, labelText, getState, setState)
-        local row = Instance.new("Frame")
-        row.Name = name
-        row.Parent = scroll
-        row.Size = UDim2.new(1, -6, 0, 46)
-        row.BackgroundColor3 = THEME.BLACK
-        corner(row, 12)
-        stroke(row, 2.2, THEME.GREEN)
-        row.LayoutOrder = order
+    local row = Instance.new("Frame")
+    row.Name = "AWC_Row1"
+    row.Parent = scroll
+    row.Size = UDim2.new(1,-6,0,46)
+    row.BackgroundColor3 = THEME.BLACK
+    row.LayoutOrder = base + 2
+    corner(row)
+    stroke(row)
 
-        local lab = Instance.new("TextLabel")
-        lab.Parent = row
-        lab.BackgroundTransparency = 1
-        lab.Size = UDim2.new(1, -160, 1, 0)
-        lab.Position = UDim2.new(0, 16, 0, 0)
-        lab.Font = Enum.Font.GothamBold
-        lab.TextSize = 13
-        lab.TextColor3 = THEME.WHITE
-        lab.TextXAlignment = Enum.TextXAlignment.Left
-        lab.Text = labelText
+    local txt = Instance.new("TextLabel")
+    txt.Parent = row
+    txt.BackgroundTransparency = 1
+    txt.Position = UDim2.new(0,16,0,0)
+    txt.Size = UDim2.new(1,-120,1,0)
+    txt.Font = Enum.Font.GothamBold
+    txt.TextSize = 13
+    txt.TextColor3 = THEME.WHITE
+    txt.TextXAlignment = Enum.TextXAlignment.Left
+    txt.Text = "Auto Water Collect"
 
-        local sw = Instance.new("Frame")
-        sw.Parent = row
-        sw.AnchorPoint = Vector2.new(1,0.5)
-        sw.Position = UDim2.new(1, -12, 0.5, 0)
-        sw.Size = UDim2.fromOffset(52,26)
-        sw.BackgroundColor3 = THEME.BLACK
-        corner(sw, 13)
+    local btn = Instance.new("TextButton")
+    btn.Parent = row
+    btn.AnchorPoint = Vector2.new(1,0.5)
+    btn.Position = UDim2.new(1,-12,0.5,0)
+    btn.Size = UDim2.fromOffset(50,24)
+    btn.Text = ""
+    btn.BackgroundColor3 = THEME.BLACK
+    corner(btn,12)
+    stroke(btn)
 
-        local swStroke = Instance.new("UIStroke")
-        swStroke.Parent = sw
-        swStroke.Thickness = 1.8
-
-        local knob = Instance.new("Frame")
-        knob.Parent = sw
-        knob.Size = UDim2.fromOffset(22,22)
-        knob.BackgroundColor3 = THEME.WHITE
-        knob.Position = UDim2.new(0,2,0.5,-11)
-        corner(knob,11)
-
-        local function update(on)
-            swStroke.Color = on and THEME.GREEN or THEME.RED
-            tween(knob, { Position = UDim2.new(on and 1 or 0, on and -24 or 2, 0.5, -11) }, 0.08)
-        end
-
-        local btn = Instance.new("TextButton")
-        btn.Parent = sw
-        btn.BackgroundTransparency = 1
-        btn.Size = UDim2.fromScale(1,1)
-        btn.Text = ""
-        btn.AutoButtonColor = false
-
-        btn.MouseButton1Click:Connect(function()
-            local new = not getState()
-            setState(new)
-            update(new)
-        end)
-
-        update(getState())
-        return update
-    end
-
-    local setVisual = makeRowSwitch(
-        "AWC_Row1",
-        base + 1,
-        "Auto Water Collect", -- ✅ Row1 ไม่มี emoji
-        function()
-            return (AA1 and AA1.getEnabled and AA1.getEnabled()) or false
-        end,
-        function(v)
-            if AA1 and AA1.setEnabled then
-                AA1.setEnabled(v)
-                if v and AA1.ensureRunner then AA1.ensureRunner() end
-            end
-        end
-    )
-
-    -- sync + ensure runner
-    task.defer(function()
-        if AA1 and AA1.ensureRunner then AA1.ensureRunner() end
-        if setVisual then
-            setVisual((AA1 and AA1.getEnabled and AA1.getEnabled()) or false)
+    btn.MouseButton1Click:Connect(function()
+        if AA1 then
+            AA1.setEnabled(not AA1.getEnabled())
+            AA1.ensure()
         end
     end)
 end) 
