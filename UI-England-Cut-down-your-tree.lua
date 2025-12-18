@@ -708,10 +708,10 @@ registerRight("Home", function(scroll) end)
 registerRight("Quest", function(scroll) end)
 registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
- --===== UFO HUB X • Home – Model A V1 + AA1 (GLOBAL RUNNER) Auto Woodcutting (Go To Tree HitBox) =====
+ --===== UFO HUB X • Home – Model A V1 + AA1 (GLOBAL RUNNER) Auto Woodcutting (Go To Tree HitBox + Equip Axe) =====
 -- Header: "Auto Woodcutting 🪓"
 -- Row1:   "Auto Woodcutting"
--- Logic: หา Model ชื่อ "Tree" -> หา Part ชื่อ "HitBox" -> ถ้าอยู่ไกลให้ไปใหม่เรื่อยๆ
+-- Logic: หา Model "Tree" -> Part "HitBox" -> ไปให้ถึง -> แล้วถือ "Axe" (Backpack -> Character) ถ้ายังไม่ถือให้ถือซ้ำๆ
 
 ----------------------------------------------------------------------
 -- 1) AA1 RUNNER (GLOBAL)
@@ -723,7 +723,7 @@ do
 
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
-    local SYSTEM_NAME = "AutoWoodcutGoHitBox"
+    local SYSTEM_NAME = "AutoWoodcut_GoHitBox_EquipAxe"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
@@ -738,14 +738,13 @@ do
 
     local STATE = {
         Enabled   = SaveGet("Enabled", false),
-        Range     = SaveGet("Range", 6),     -- ระยะที่ถือว่า “ถึงแล้ว”
-        StepSec   = SaveGet("StepSec", 0.5), -- ความถี่เช็ค/ไปใหม่
-        YOffset   = SaveGet("YOffset", 3),   -- ยกขึ้นนิดนึงกันจมพื้น
+        Range     = SaveGet("Range", 6),
+        StepSec   = SaveGet("StepSec", 0.35), -- ถี่ขึ้นนิดนึงให้ “จับขวาน” ไว
+        YOffset   = SaveGet("YOffset", 3),
+        AxeName   = SaveGet("AxeName", "Axe"),
     }
 
-    local function getChar()
-        return LP.Character
-    end
+    local function getChar() return LP.Character end
     local function getHumanoid()
         local ch = getChar()
         return ch and ch:FindFirstChildOfClass("Humanoid") or nil
@@ -779,23 +778,71 @@ do
     local function goToHitBox(hitbox)
         local hrp = getHRP()
         local hum = getHumanoid()
-        if not (hrp and hum and hitbox) then return end
+        if not (hrp and hum and hitbox) then return false end
 
-        local targetPos = hitbox.Position + Vector3.new(0, tonumber(STATE.YOffset) or 3, 0)
         local range = tonumber(STATE.Range) or 6
         if range < 2 then range = 2 end
 
         local dist = (hrp.Position - hitbox.Position).Magnitude
-        if dist <= range then return end
+        if dist <= range then
+            return true
+        end
 
-        -- ไปใหม่: MoveTo + snap ช่วยกันติด/กันหลุด
-        pcall(function()
-            hum:MoveTo(hitbox.Position)
-        end)
+        local targetPos = hitbox.Position + Vector3.new(0, tonumber(STATE.YOffset) or 3, 0)
+
+        pcall(function() hum:MoveTo(hitbox.Position) end)
         task.wait(0.05)
-        pcall(function()
-            hrp.CFrame = CFrame.new(targetPos)
-        end)
+        pcall(function() hrp.CFrame = CFrame.new(targetPos) end)
+
+        return false
+    end
+
+    ------------------------------------------------------------------
+    -- ✅ Equip Axe logic (ตามที่นายบอก)
+    -- - ถ้า Axe อยู่ใน Backpack = ยังไม่ถือ -> Equip
+    -- - ถ้า Axe ไม่อยู่ใน Backpack แล้ว แต่ไปอยู่ Character = ถืออยู่
+    ------------------------------------------------------------------
+    local function findAxeInBackpack()
+        local bp = LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
+        if not bp then return nil, nil end
+        local axeName = tostring(STATE.AxeName or "Axe")
+        local t = bp:FindFirstChild(axeName)
+        if t and t:IsA("Tool") then
+            return t, bp
+        end
+        return nil, bp
+    end
+
+    local function isAxeEquipped()
+        local ch = getChar()
+        if not ch then return false end
+        local axeName = tostring(STATE.AxeName or "Axe")
+        local t = ch:FindFirstChild(axeName)
+        return (t and t:IsA("Tool")) and true or false
+    end
+
+    local function ensureEquipAxe()
+        -- ถ้าอยู่ในมือแล้ว จบ
+        if isAxeEquipped() then return true end
+
+        local hum = getHumanoid()
+        if not hum then return false end
+
+        local axeTool, backpack = findAxeInBackpack()
+
+        -- ถ้า Backpack มีอยู่ แต่ไม่มี Axe -> อาจจะถืออยู่แล้ว หรือโดนย้าย/ยังไม่โหลด
+        if backpack and not axeTool then
+            -- ถ้า Character ก็ไม่มี แปลว่ายังไม่พร้อม
+            return isAxeEquipped()
+        end
+
+        -- ถ้า Axe อยู่ใน Backpack = ยังไม่ได้ถือ -> Equip
+        if axeTool then
+            pcall(function() hum:EquipTool(axeTool) end)
+            task.wait(0.08)
+        end
+
+        return isAxeEquipped()
     end
 
     local loopToken = 0
@@ -816,9 +863,16 @@ do
             while STATE.Enabled and loopToken == myToken do
                 local hitbox = findNearestTreeHitBox()
                 if hitbox then
+                    -- 1) ไปให้ถึงก่อน
                     goToHitBox(hitbox)
+                    -- 2) แล้วค่อยถือขวาน (ถ้ายังไม่ได้ถือจะพยายามซ้ำ)
+                    ensureEquipAxe()
+                else
+                    -- ไม่มี Tree/HitBox ตอนนี้ ก็ยังพยายามถือขวานไว้ก่อน
+                    ensureEquipAxe()
                 end
-                local step = tonumber(STATE.StepSec) or 0.5
+
+                local step = tonumber(STATE.StepSec) or 0.35
                 if step < 0.1 then step = 0.1 end
                 task.wait(step)
             end
@@ -849,7 +903,6 @@ do
         saveSet      = SaveSet,
     }
 
-    -- Auto-run ตอนโหลด
     task.defer(applyFromState)
 end
 
@@ -858,7 +911,7 @@ end
 ----------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
-    local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWoodcutGoHitBox"]
+    local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWoodcut_GoHitBox_EquipAxe"]
 
     local THEME = {
         GREEN = Color3.fromRGB(25,255,125),
@@ -871,13 +924,11 @@ registerRight("Home", function(scroll)
     local function stroke(ui, th, col) local s=Instance.new("UIStroke"); s.Thickness=th or 2.2; s.Color=col or THEME.GREEN; s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border; s.Parent=ui end
     local function tween(o, p, d) TweenService:Create(o, TweenInfo.new(d or 0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), p):Play() end
 
-    -- CLEANUP เฉพาะระบบนี้
     for _, name in ipairs({"AW_Header","AW_Row1"}) do
         local o = scroll:FindFirstChild(name)
         if o then o:Destroy() end
     end
 
-    -- UIListLayout (A V1) + Canvas
     local vlist = scroll:FindFirstChildOfClass("UIListLayout")
     if not vlist then
         vlist = Instance.new("UIListLayout")
@@ -887,7 +938,6 @@ registerRight("Home", function(scroll)
     end
     scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 
-    -- base LayoutOrder dynamic
     local base = 0
     for _, ch in ipairs(scroll:GetChildren()) do
         if ch:IsA("GuiObject") and ch ~= vlist then
@@ -895,7 +945,6 @@ registerRight("Home", function(scroll)
         end
     end
 
-    -- HEADER (English + emoji)
     local header = Instance.new("TextLabel")
     header.Name = "AW_Header"
     header.Parent = scroll
@@ -908,7 +957,6 @@ registerRight("Home", function(scroll)
     header.Text = "Auto Woodcutting 🪓"
     header.LayoutOrder = base + 1
 
-    -- Row Switch (รายการที่ 1 ไม่มี emoji)
     local function makeRowSwitch(name, order, labelText, getState, setState)
         local row = Instance.new("Frame")
         row.Name = name
@@ -986,7 +1034,6 @@ registerRight("Home", function(scroll)
         end
     )
 
-    -- sync + ensure runner
     task.defer(function()
         if AA1 and AA1.ensureRunner then AA1.ensureRunner() end
         if setVisual then
