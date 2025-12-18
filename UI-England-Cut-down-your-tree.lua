@@ -1057,37 +1057,98 @@ registerRight("Home", function(scroll)
         end
     end)
 end)
---===== UFO HUB X • Home – Model A V1 + AA1 Auto Water Collect (FINAL) =====
+--===== UFO HUB X • Home – Model A V1 + AA1 Auto Water Collect (2 Rows) =====
 -- Header : "Auto Water Collect 💧"
--- Row 1  : "Auto Water Collect"
--- Logic  : ใช้ Remote ClickWateringCan ตรง 100% (ของเกม)
+-- Row 1  : "Auto Watering"       (TapButtonClick -> workspace.Plots.Plot)
+-- Row 2  : "Auto Water Collect"  (ClickWateringCan -> workspace.Mutations.Normal.WateringCan)
 
 ----------------------------------------------------------------------
--- 1) AA1 RUNNER (GLOBAL)
+-- 1) AA1 RUNNER (GLOBAL) - Row1: TapButtonClick
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-    -- AA1 SAVE
-    local SAVE = (getgenv and getgenv().UFOX_SAVE) or {
-        get = function(_,_,d) return d end,
-        set = function() end
-    }
+    local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
-    local SYSTEM_NAME = "AutoWaterCollect"
+    local SYSTEM_NAME = "AutoWatering_TapButtonClick"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
     local function K(f) return BASE_SCOPE.."/"..f end
-    local function SaveGet(f,d)
-        local ok,v = pcall(function() return SAVE.get(K(f),d) end)
-        return ok and v or d
-    end
+    local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
     local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
     local STATE = {
         Enabled  = SaveGet("Enabled", false),
-        LoopWait = SaveGet("LoopWait", 1.0), -- หน่วงต่อรอบ
+        LoopWait = SaveGet("LoopWait", 1.0),
+    }
+
+    local loopToken = 0
+    local running = false
+
+    local function fireTapButton()
+        local args = {
+            workspace:WaitForChild("Plots"):WaitForChild("Plot")
+        }
+        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TapButtonClick"):FireServer(unpack(args))
+    end
+
+    local function applyFromState()
+        if not STATE.Enabled or running then return end
+        running = true
+        loopToken += 1
+        local myToken = loopToken
+
+        task.spawn(function()
+            while STATE.Enabled and loopToken == myToken do
+                pcall(fireTapButton)
+                task.wait(tonumber(STATE.LoopWait) or 1)
+            end
+            running = false
+        end)
+    end
+
+    local function SetEnabled(v)
+        STATE.Enabled = v and true or false
+        SaveSet("Enabled", STATE.Enabled)
+        if STATE.Enabled then
+            task.defer(applyFromState)
+        else
+            loopToken += 1
+            running = false
+        end
+    end
+
+    _G.UFOX_AA1 = _G.UFOX_AA1 or {}
+    _G.UFOX_AA1[SYSTEM_NAME] = {
+        state        = STATE,
+        setEnabled   = SetEnabled,
+        getEnabled   = function() return STATE.Enabled == true end,
+        ensureRunner = function() task.defer(applyFromState) end,
+    }
+
+    task.defer(applyFromState)
+end
+
+----------------------------------------------------------------------
+-- 2) AA1 RUNNER (GLOBAL) - Row2: ClickWateringCan (ของเดิม)
+----------------------------------------------------------------------
+do
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+    local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
+
+    local SYSTEM_NAME = "AutoWaterCollect_ClickWateringCan"
+    local GAME_ID  = tonumber(game.GameId)  or 0
+    local PLACE_ID = tonumber(game.PlaceId) or 0
+    local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
+    local function K(f) return BASE_SCOPE.."/"..f end
+    local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
+    local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
+
+    local STATE = {
+        Enabled  = SaveGet("Enabled", false),
+        LoopWait = SaveGet("LoopWait", 1.0),
     }
 
     local loopToken = 0
@@ -1099,11 +1160,7 @@ do
                 :WaitForChild("Normal")
                 :WaitForChild("WateringCan")
         }
-
-        ReplicatedStorage
-            :WaitForChild("Remotes")
-            :WaitForChild("ClickWateringCan")
-            :FireServer(unpack(args))
+        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ClickWateringCan"):FireServer(unpack(args))
     end
 
     local function applyFromState()
@@ -1140,16 +1197,17 @@ do
         ensureRunner = function() task.defer(applyFromState) end,
     }
 
-    -- auto-run ถ้าเคยเปิดสวิตช์ไว้
     task.defer(applyFromState)
 end
 
 ----------------------------------------------------------------------
--- 2) UI PART: Model A V1 (Home)
+-- 3) UI PART: Model A V1 (Home) - Header + Row1 + Row2
 ----------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
-    local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWaterCollect"]
+
+    local AA1_ROW1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWatering_TapButtonClick"]
+    local AA1_ROW2 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWaterCollect_ClickWateringCan"]
 
     local THEME = {
         GREEN = Color3.fromRGB(25,255,125),
@@ -1162,8 +1220,8 @@ registerRight("Home", function(scroll)
     local function stroke(ui,t,col) local s=Instance.new("UIStroke"); s.Thickness=t or 2.2; s.Color=col or THEME.GREEN; s.Parent=ui end
     local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
 
-    -- cleanup
-    for _,n in ipairs({"AWC_Header","AWC_Row1"}) do
+    -- cleanup เฉพาะของระบบนี้
+    for _,n in ipairs({"AWC_Header","AWC_Row1","AWC_Row2"}) do
         local o = scroll:FindFirstChild(n)
         if o then o:Destroy() end
     end
@@ -1172,6 +1230,7 @@ registerRight("Home", function(scroll)
     if not list then
         list = Instance.new("UIListLayout", scroll)
         list.Padding = UDim.new(0,12)
+        list.SortOrder = Enum.SortOrder.LayoutOrder
     end
     scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 
@@ -1195,64 +1254,79 @@ registerRight("Home", function(scroll)
     header.Text = "Auto Water Collect 💧"
     header.LayoutOrder = base + 1
 
-    -- Switch Row
-    local row = Instance.new("Frame")
-    row.Name = "AWC_Row1"
-    row.Parent = scroll
-    row.Size = UDim2.new(1,-6,0,46)
-    row.BackgroundColor3 = THEME.BLACK
-    corner(row,12)
-    stroke(row,2.2,THEME.GREEN)
-    row.LayoutOrder = base + 2
+    local function makeRowSwitch(rowName, order, labelText, aa1Ref)
+        local row = Instance.new("Frame")
+        row.Name = rowName
+        row.Parent = scroll
+        row.Size = UDim2.new(1,-6,0,46)
+        row.BackgroundColor3 = THEME.BLACK
+        corner(row,12)
+        stroke(row,2.2,THEME.GREEN)
+        row.LayoutOrder = order
 
-    local lab = Instance.new("TextLabel", row)
-    lab.BackgroundTransparency = 1
-    lab.Position = UDim2.new(0,16,0,0)
-    lab.Size = UDim2.new(1,-160,1,0)
-    lab.Font = Enum.Font.GothamBold
-    lab.TextSize = 13
-    lab.TextColor3 = THEME.WHITE
-    lab.TextXAlignment = Enum.TextXAlignment.Left
-    lab.Text = "Auto Water Collect"
+        local lab = Instance.new("TextLabel", row)
+        lab.BackgroundTransparency = 1
+        lab.Position = UDim2.new(0,16,0,0)
+        lab.Size = UDim2.new(1,-160,1,0)
+        lab.Font = Enum.Font.GothamBold
+        lab.TextSize = 13
+        lab.TextColor3 = THEME.WHITE
+        lab.TextXAlignment = Enum.TextXAlignment.Left
+        lab.Text = labelText
 
-    local sw = Instance.new("Frame", row)
-    sw.AnchorPoint = Vector2.new(1,0.5)
-    sw.Position = UDim2.new(1,-12,0.5,0)
-    sw.Size = UDim2.fromOffset(52,26)
-    sw.BackgroundColor3 = THEME.BLACK
-    corner(sw,13)
+        local sw = Instance.new("Frame", row)
+        sw.AnchorPoint = Vector2.new(1,0.5)
+        sw.Position = UDim2.new(1,-12,0.5,0)
+        sw.Size = UDim2.fromOffset(52,26)
+        sw.BackgroundColor3 = THEME.BLACK
+        corner(sw,13)
 
-    local st = Instance.new("UIStroke", sw)
-    st.Thickness = 1.8
+        local st = Instance.new("UIStroke", sw)
+        st.Thickness = 1.8
 
-    local knob = Instance.new("Frame", sw)
-    knob.Size = UDim2.fromOffset(22,22)
-    knob.Position = UDim2.new(0,2,0.5,-11)
-    knob.BackgroundColor3 = THEME.WHITE
-    corner(knob,11)
+        local knob = Instance.new("Frame", sw)
+        knob.Size = UDim2.fromOffset(22,22)
+        knob.Position = UDim2.new(0,2,0.5,-11)
+        knob.BackgroundColor3 = THEME.WHITE
+        corner(knob,11)
 
-    local function update(on)
-        st.Color = on and THEME.GREEN or THEME.RED
-        tween(knob,{
-            Position = UDim2.new(on and 1 or 0,on and -24 or 2,0.5,-11)
-        })
+        local function update(on)
+            st.Color = on and THEME.GREEN or THEME.RED
+            tween(knob,{ Position = UDim2.new(on and 1 or 0,on and -24 or 2,0.5,-11) })
+        end
+
+        local btn = Instance.new("TextButton", sw)
+        btn.Size = UDim2.fromScale(1,1)
+        btn.BackgroundTransparency = 1
+        btn.Text = ""
+
+        btn.MouseButton1Click:Connect(function()
+            local cur = (aa1Ref and aa1Ref.getEnabled and aa1Ref.getEnabled()) or false
+            local v = not cur
+            if aa1Ref and aa1Ref.setEnabled then
+                aa1Ref.setEnabled(v)
+                if v and aa1Ref.ensureRunner then aa1Ref.ensureRunner() end
+            end
+            update(v)
+        end)
+
+        update((aa1Ref and aa1Ref.getEnabled and aa1Ref.getEnabled()) or false)
+        return update
     end
 
-    local btn = Instance.new("TextButton", sw)
-    btn.Size = UDim2.fromScale(1,1)
-    btn.BackgroundTransparency = 1
-    btn.Text = ""
+    -- Row1 (ใหม่): TapButtonClick
+    local setRow1 = makeRowSwitch("AWC_Row1", base + 2, "Auto Watering", AA1_ROW1)
 
-    btn.MouseButton1Click:Connect(function()
-        local v = not (AA1 and AA1.getEnabled and AA1.getEnabled())
-        if AA1 and AA1.setEnabled then
-            AA1.setEnabled(v)
-            if v then AA1.ensureRunner() end
-        end
-        update(v)
+    -- Row2 (เดิม): ClickWateringCan
+    local setRow2 = makeRowSwitch("AWC_Row2", base + 3, "Auto Water Collect", AA1_ROW2)
+
+    -- sync วิชวล + ensure runner
+    task.defer(function()
+        if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
+        if AA1_ROW2 and AA1_ROW2.ensureRunner then AA1_ROW2.ensureRunner() end
+        if setRow1 then setRow1((AA1_ROW1 and AA1_ROW1.getEnabled and AA1_ROW1.getEnabled()) or false) end
+        if setRow2 then setRow2((AA1_ROW2 and AA1_ROW2.getEnabled and AA1_ROW2.getEnabled()) or false) end
     end)
-
-    update(AA1 and AA1.getEnabled and AA1.getEnabled() or false)
 end) 
 --===== UFO HUB X • Home – Auto Claim Rewards 🎁 (Model A V1 + AA1 • PERMA LOOPS) =====
 -- Tab: Home
