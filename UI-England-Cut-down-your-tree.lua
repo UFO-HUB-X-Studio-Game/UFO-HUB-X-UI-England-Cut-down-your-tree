@@ -1060,7 +1060,12 @@ end)
 --===== UFO HUB X • Home – Model A V1 + AA1 (GLOBAL RUNNER) Auto Water Collect (WateringCan/Brick Click) =====
 -- Header: "Auto Water Collect 💧"
 -- Row1:   "Auto Water Collect"
--- Logic: หา Model "WateringCan" -> หา Brick ข้างใน -> ไปกอด Brick -> กด/คลิก (ClickDetector/ProximityPrompt) -> วนลูป
+-- Logic:
+--   1) หา Model "WateringCan" ที่ใกล้สุด
+--   2) หา Brick ข้างใน (ชื่อ "Brick" ก่อน / ไม่เจอเอา BasePart ตัวแรก)
+--   3) ไปกอด Brick
+--   4) คลิกด้วย ClickDetector / ProximityPrompt
+--   5) ถ้า "WateringCan" หายไป = เก็บน้ำแล้ว -> รอจนมันกลับมา แล้วทำต่อ
 
 ----------------------------------------------------------------------
 -- 1) AA1 RUNNER (GLOBAL)
@@ -1071,30 +1076,38 @@ do
     local LP = Players.LocalPlayer
 
     -- AA1 SAVE
-    local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
+    local SAVE = (getgenv and getgenv().UFOX_SAVE) or {
+        get = function(_, _, d) return d end,
+        set = function() end
+    }
 
     local SYSTEM_NAME = "AutoWaterCollect_WateringCan"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
+
     local function K(field) return BASE_SCOPE .. "/" .. field end
     local function SaveGet(field, default)
         local ok, v = pcall(function() return SAVE.get(K(field), default) end)
         return ok and v or default
     end
-    local function SaveSet(field, value) pcall(function() SAVE.set(K(field), value) end) end
+    local function SaveSet(field, value)
+        pcall(function() SAVE.set(K(field), value) end)
+    end
 
     local STATE = {
         Enabled = SaveGet("Enabled", false),
 
-        Range   = SaveGet("Range", 6),        -- ระยะถือว่า “กอดแล้ว”
-        StepSec = SaveGet("StepSec", 0.35),   -- ความถี่ทำงาน
-        YOffset = SaveGet("YOffset", 2.5),    -- ยกนิดกันจม
+        Range   = SaveGet("Range", 6),
+        StepSec = SaveGet("StepSec", 0.30),
+        YOffset = SaveGet("YOffset", 2.5),
 
         ModelName = SaveGet("ModelName", "WateringCan"),
         BrickName = SaveGet("BrickName", "Brick"),
 
-        ClickGap  = SaveGet("ClickGap", 0.10), -- หน่วงนิดระหว่างคลิก
+        ClickGap      = SaveGet("ClickGap", 0.10),
+        RespawnWait   = SaveGet("RespawnWait", 0.50), -- ตอน WateringCan หาย รอเช็คกลับมา
+        AfterCollect  = SaveGet("AfterCollect", 0.60), -- กันสแปมหลังคลิกจนมันหาย
     }
 
     local function getChar() return LP.Character end
@@ -1107,19 +1120,21 @@ do
         return ch and ch:FindFirstChild("HumanoidRootPart") or nil
     end
 
-    -- หา WateringCan ที่ใกล้สุด แล้วคืน “brick เป้าหมาย” + model
+    -- หา WateringCan ที่ใกล้สุด -> คืน brick + model
     local function findNearestWateringCanBrick()
         local hrp = getHRP()
         if not hrp then return nil, nil end
 
         local bestBrick, bestModel, bestDist = nil, nil, math.huge
+        local modelName = tostring(STATE.ModelName)
+        local brickName = tostring(STATE.BrickName)
 
         for _, d in ipairs(Workspace:GetDescendants()) do
-            if d:IsA("Model") and d.Name == tostring(STATE.ModelName) then
-                -- 1) พยายามหา Brick ตามชื่อก่อน
-                local brick = d:FindFirstChild(tostring(STATE.BrickName), true)
+            if d:IsA("Model") and d.Name == modelName then
+                -- หา Brick ตามชื่อก่อน
+                local brick = d:FindFirstChild(brickName, true)
                 if not (brick and brick:IsA("BasePart")) then
-                    -- 2) ถ้าไม่เจอชื่อ Brick ให้เอา BasePart ตัวแรกที่เหมาะ
+                    -- ไม่เจอชื่อ -> เอา BasePart ตัวแรก
                     for _, ch in ipairs(d:GetDescendants()) do
                         if ch:IsA("BasePart") then
                             brick = ch
@@ -1151,9 +1166,7 @@ do
         if range < 2 then range = 2 end
 
         local dist = (hrp.Position - part.Position).Magnitude
-        if dist <= range then
-            return true
-        end
+        if dist <= range then return true end
 
         local targetPos = part.Position + Vector3.new(0, tonumber(STATE.YOffset) or 2.5, 0)
 
@@ -1164,32 +1177,28 @@ do
         return false
     end
 
-    -- “กด/คลิก” ที่น้ำหรือ Brick ใน WateringCan
     local function tryClick(model, brick)
-        if not model then return end
+        if not model then return false end
 
-        -- 1) ClickDetector (นิยมสุดในระบบกด)
-        local cd = model:FindFirstChildOfClass("ClickDetector") or (brick and brick:FindFirstChildOfClass("ClickDetector"))
-        if cd then
-            pcall(function()
-                -- ถ้ามี fireclickdetector ใน environment จะยิงให้
-                if typeof(fireclickdetector) == "function" then
-                    fireclickdetector(cd)
-                end
-            end)
-            return
+        -- ClickDetector
+        local cd = model:FindFirstChildOfClass("ClickDetector")
+            or (brick and brick:FindFirstChildOfClass("ClickDetector"))
+
+        if cd and typeof(fireclickdetector) == "function" then
+            pcall(function() fireclickdetector(cd) end)
+            return true
         end
 
-        -- 2) ProximityPrompt (เผื่อบางแมพใช้ prompt แทน)
-        local pp = model:FindFirstChildOfClass("ProximityPrompt") or (brick and brick:FindFirstChildOfClass("ProximityPrompt"))
-        if pp then
-            pcall(function()
-                if typeof(fireproximityprompt) == "function" then
-                    fireproximityprompt(pp, 0)
-                end
-            end)
-            return
+        -- ProximityPrompt (เผื่อบางแมพ)
+        local pp = model:FindFirstChildOfClass("ProximityPrompt")
+            or (brick and brick:FindFirstChildOfClass("ProximityPrompt"))
+
+        if pp and typeof(fireproximityprompt) == "function" then
+            pcall(function() fireproximityprompt(pp, 0) end)
+            return true
         end
+
+        return false
     end
 
     local loopToken = 0
@@ -1204,21 +1213,43 @@ do
         local myToken = loopToken
 
         task.spawn(function()
+            local lastSawModel = false
+            local lastClickAt = 0
+
             while STATE.Enabled and loopToken == myToken do
                 local brick, model = findNearestWateringCanBrick()
-                if brick and model then
-                    local hugged = goHug(brick)
-                    if hugged then
-                        tryClick(model, brick)
-                        local gap = tonumber(STATE.ClickGap) or 0.1
-                        if gap > 0 then task.wait(gap) end
-                    end
-                end
 
-                local step = tonumber(STATE.StepSec) or 0.35
-                if step < 0.1 then step = 0.1 end
-                task.wait(step)
+                -- ✅ ถ้า WateringCan หาย = เก็บน้ำแล้ว -> รอจนมันกลับมา
+                if not model then
+                    if lastSawModel then
+                        -- เพิ่งหายไป = ถือว่าเก็บสำเร็จ
+                        task.wait(tonumber(STATE.AfterCollect) or 0.6)
+                    end
+                    lastSawModel = false
+                    task.wait(tonumber(STATE.RespawnWait) or 0.5)
+                else
+                    lastSawModel = true
+
+                    if brick then
+                        local hugged = goHug(brick)
+                        if hugged then
+                            local now = os.clock()
+                            local gap = tonumber(STATE.ClickGap) or 0.1
+                            if (now - lastClickAt) >= gap then
+                                local clicked = tryClick(model, brick)
+                                if clicked then
+                                    lastClickAt = now
+                                end
+                            end
+                        end
+                    end
+
+                    local step = tonumber(STATE.StepSec) or 0.30
+                    if step < 0.1 then step = 0.1 end
+                    task.wait(step)
+                end
             end
+
             running = false
         end)
     end
@@ -1227,6 +1258,7 @@ do
         v = v and true or false
         STATE.Enabled = v
         SaveSet("Enabled", v)
+
         if v then
             task.defer(applyFromState)
         else
@@ -1242,6 +1274,8 @@ do
         setEnabled   = SetEnabled,
         getEnabled   = function() return STATE.Enabled == true end,
         ensureRunner = function() task.defer(applyFromState) end,
+        saveGet      = SaveGet,
+        saveSet      = SaveSet,
     }
 
     -- AA1 auto-run
@@ -1262,9 +1296,27 @@ registerRight("Home", function(scroll)
         BLACK = Color3.fromRGB(0,0,0),
     }
 
-    local function corner(ui, r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r or 12); c.Parent=ui end
-    local function stroke(ui, th, col) local s=Instance.new("UIStroke"); s.Thickness=th or 2.2; s.Color=col or THEME.GREEN; s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border; s.Parent=ui end
-    local function tween(o, p, d) TweenService:Create(o, TweenInfo.new(d or 0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), p):Play() end
+    local function corner(ui, r)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, r or 12)
+        c.Parent = ui
+    end
+
+    local function stroke(ui, th, col)
+        local s = Instance.new("UIStroke")
+        s.Thickness = th or 2.2
+        s.Color = col or THEME.GREEN
+        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+        s.Parent = ui
+    end
+
+    local function tween(o, p, d)
+        TweenService:Create(
+            o,
+            TweenInfo.new(d or 0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+            p
+        ):Play()
+    end
 
     -- CLEANUP เฉพาะระบบนี้
     for _, name in ipairs({"AWC_Header","AWC_Row1"}) do
@@ -1272,7 +1324,7 @@ registerRight("Home", function(scroll)
         if o then o:Destroy() end
     end
 
-    -- UIListLayout (A V1)
+    -- UIListLayout (A V1) (มีได้ตัวเดียว)
     local vlist = scroll:FindFirstChildOfClass("UIListLayout")
     if not vlist then
         vlist = Instance.new("UIListLayout")
@@ -1282,13 +1334,14 @@ registerRight("Home", function(scroll)
     end
     scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 
-    -- base LayoutOrder dynamic
+    -- base LayoutOrder dynamic (ตามมาตรฐานนาย)
     local base = 0
     for _, ch in ipairs(scroll:GetChildren()) do
         if ch:IsA("GuiObject") and ch ~= vlist then
             base = math.max(base, ch.LayoutOrder or 0)
         end
     end
+    base = base + 1
 
     -- HEADER (English + emoji)
     local header = Instance.new("TextLabel")
@@ -1301,7 +1354,7 @@ registerRight("Home", function(scroll)
     header.TextColor3 = THEME.WHITE
     header.TextXAlignment = Enum.TextXAlignment.Left
     header.Text = "Auto Water Collect 💧"
-    header.LayoutOrder = base + 1
+    header.LayoutOrder = base
 
     local function makeRowSwitch(name, order, labelText, getState, setState)
         local row = Instance.new("Frame")
@@ -1367,8 +1420,8 @@ registerRight("Home", function(scroll)
 
     local setVisual = makeRowSwitch(
         "AWC_Row1",
-        base + 2,
-        "Auto Water Collect", -- ✅ รายการที่ 1 ไม่มี emoji
+        base + 1,
+        "Auto Water Collect", -- ✅ Row1 ไม่มี emoji
         function()
             return (AA1 and AA1.getEnabled and AA1.getEnabled()) or false
         end,
@@ -1380,6 +1433,7 @@ registerRight("Home", function(scroll)
         end
     )
 
+    -- sync + ensure runner
     task.defer(function()
         if AA1 and AA1.ensureRunner then AA1.ensureRunner() end
         if setVisual then
