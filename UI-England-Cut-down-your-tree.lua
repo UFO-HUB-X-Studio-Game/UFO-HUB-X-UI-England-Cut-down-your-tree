@@ -708,10 +708,10 @@ registerRight("Home", function(scroll) end)
 registerRight("Quest", function(scroll) end)
 registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
- --===== UFO HUB X • Home – Model A V1 + AA1 (GLOBAL RUNNER) Auto Woodcutting (Go To Tree HitBox + Equip Axe) =====
+ --===== UFO HUB X • Home – Model A V1 + AA1 (GLOBAL RUNNER) Auto Woodcutting (Go To Tree HitBox + Equip Axe + Swing) =====
 -- Header: "Auto Woodcutting 🪓"
 -- Row1:   "Auto Woodcutting"
--- Logic: หา Model "Tree" -> Part "HitBox" -> ไปให้ถึง -> แล้วถือ "Axe" (Backpack -> Character) ถ้ายังไม่ถือให้ถือซ้ำๆ
+-- Flow loop: find Tree.HitBox -> go to hitbox -> equip Axe -> ReplicatedStorage.Remotes.AxeSwing:FireServer()
 
 ----------------------------------------------------------------------
 -- 1) AA1 RUNNER (GLOBAL)
@@ -719,11 +719,12 @@ registerRight("Settings", function(scroll) end)
 do
     local Players = game:GetService("Players")
     local Workspace = game:GetService("Workspace")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local LP = Players.LocalPlayer
 
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
-    local SYSTEM_NAME = "AutoWoodcut_GoHitBox_EquipAxe"
+    local SYSTEM_NAME = "AutoWoodcut_GoHitBox_EquipAxe_Swing"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
@@ -732,16 +733,16 @@ do
         local ok, v = pcall(function() return SAVE.get(K(field), default) end)
         return ok and v or default
     end
-    local function SaveSet(field, value)
-        pcall(function() SAVE.set(K(field), value) end)
-    end
+    local function SaveSet(field, value) pcall(function() SAVE.set(K(field), value) end) end
 
     local STATE = {
         Enabled   = SaveGet("Enabled", false),
         Range     = SaveGet("Range", 6),
-        StepSec   = SaveGet("StepSec", 0.35), -- ถี่ขึ้นนิดนึงให้ “จับขวาน” ไว
+        StepSec   = SaveGet("StepSec", 0.20), -- loop tick
         YOffset   = SaveGet("YOffset", 3),
         AxeName   = SaveGet("AxeName", "Axe"),
+
+        SwingSec  = SaveGet("SwingSec", 0.12), -- ✅ ความถี่การฟัน (กันสแปม)
     }
 
     local function getChar() return LP.Character end
@@ -754,7 +755,7 @@ do
         return ch and ch:FindFirstChild("HumanoidRootPart") or nil
     end
 
-    -- หา HitBox ของ Tree ที่ “ใกล้ผู้เล่นที่สุด”
+    -- หา HitBox ของ Tree ที่ใกล้สุด
     local function findNearestTreeHitBox()
         local hrp = getHRP()
         if not hrp then return nil end
@@ -784,12 +785,9 @@ do
         if range < 2 then range = 2 end
 
         local dist = (hrp.Position - hitbox.Position).Magnitude
-        if dist <= range then
-            return true
-        end
+        if dist <= range then return true end
 
         local targetPos = hitbox.Position + Vector3.new(0, tonumber(STATE.YOffset) or 3, 0)
-
         pcall(function() hum:MoveTo(hitbox.Position) end)
         task.wait(0.05)
         pcall(function() hrp.CFrame = CFrame.new(targetPos) end)
@@ -797,19 +795,13 @@ do
         return false
     end
 
-    ------------------------------------------------------------------
-    -- ✅ Equip Axe logic (ตามที่นายบอก)
-    -- - ถ้า Axe อยู่ใน Backpack = ยังไม่ถือ -> Equip
-    -- - ถ้า Axe ไม่อยู่ใน Backpack แล้ว แต่ไปอยู่ Character = ถืออยู่
-    ------------------------------------------------------------------
+    -- Equip Axe
     local function findAxeInBackpack()
         local bp = LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
         if not bp then return nil, nil end
         local axeName = tostring(STATE.AxeName or "Axe")
         local t = bp:FindFirstChild(axeName)
-        if t and t:IsA("Tool") then
-            return t, bp
-        end
+        if t and t:IsA("Tool") then return t, bp end
         return nil, bp
     end
 
@@ -822,27 +814,49 @@ do
     end
 
     local function ensureEquipAxe()
-        -- ถ้าอยู่ในมือแล้ว จบ
         if isAxeEquipped() then return true end
 
         local hum = getHumanoid()
         if not hum then return false end
 
         local axeTool, backpack = findAxeInBackpack()
-
-        -- ถ้า Backpack มีอยู่ แต่ไม่มี Axe -> อาจจะถืออยู่แล้ว หรือโดนย้าย/ยังไม่โหลด
         if backpack and not axeTool then
-            -- ถ้า Character ก็ไม่มี แปลว่ายังไม่พร้อม
             return isAxeEquipped()
         end
 
-        -- ถ้า Axe อยู่ใน Backpack = ยังไม่ได้ถือ -> Equip
         if axeTool then
             pcall(function() hum:EquipTool(axeTool) end)
             task.wait(0.08)
         end
 
         return isAxeEquipped()
+    end
+
+    -- ✅ AxeSwing Remote (cache)
+    local cachedSwingRemote
+    local function getSwingRemote()
+        if cachedSwingRemote and cachedSwingRemote.Parent then return cachedSwingRemote end
+        local remotes = ReplicatedStorage:WaitForChild("Remotes", 5)
+        if not remotes then return nil end
+        cachedSwingRemote = remotes:WaitForChild("AxeSwing", 5)
+        return cachedSwingRemote
+    end
+
+    local lastSwing = 0
+    local function trySwing()
+        local r = getSwingRemote()
+        if not r then return end
+
+        local cd = tonumber(STATE.SwingSec) or 0.12
+        if cd < 0.03 then cd = 0.03 end
+
+        local now = os.clock()
+        if (now - lastSwing) < cd then return end
+        lastSwing = now
+
+        pcall(function()
+            r:FireServer()
+        end)
     end
 
     local loopToken = 0
@@ -862,18 +876,20 @@ do
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
                 local hitbox = findNearestTreeHitBox()
+                local atTree = false
                 if hitbox then
-                    -- 1) ไปให้ถึงก่อน
-                    goToHitBox(hitbox)
-                    -- 2) แล้วค่อยถือขวาน (ถ้ายังไม่ได้ถือจะพยายามซ้ำ)
-                    ensureEquipAxe()
-                else
-                    -- ไม่มี Tree/HitBox ตอนนี้ ก็ยังพยายามถือขวานไว้ก่อน
-                    ensureEquipAxe()
+                    atTree = goToHitBox(hitbox)
                 end
 
-                local step = tonumber(STATE.StepSec) or 0.35
-                if step < 0.1 then step = 0.1 end
+                local hasAxe = ensureEquipAxe()
+
+                -- ✅ ฟันเฉพาะตอน “ถึงต้นไม้ + ถือขวานแล้ว”
+                if atTree and hasAxe then
+                    trySwing()
+                end
+
+                local step = tonumber(STATE.StepSec) or 0.20
+                if step < 0.05 then step = 0.05 end
                 task.wait(step)
             end
             running = false
@@ -911,7 +927,7 @@ end
 ----------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
-    local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWoodcut_GoHitBox_EquipAxe"]
+    local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWoodcut_GoHitBox_EquipAxe_Swing"]
 
     local THEME = {
         GREEN = Color3.fromRGB(25,255,125),
