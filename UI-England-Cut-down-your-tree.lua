@@ -1057,90 +1057,65 @@ registerRight("Home", function(scroll)
         end
     end)
 end)
---===== UFO HUB X • Home – Model A V1 + AA1 =====
--- System: Auto Water Collect 💧
--- Logic:
--- workspace.Mutations.Normal.WateringCan
---   → HitBox (ตำแหน่งยืน)
---   → ClickDetector (กดเก็บน้ำ)
---   → ถ้า WateringCan หาย = เก็บน้ำแล้ว (หยุด)
+--===== UFO HUB X • Home – Model A V1 + AA1 Auto Water Collect (FINAL) =====
+-- Header : "Auto Water Collect 💧"
+-- Row 1  : "Auto Water Collect"
+-- Logic  : ใช้ Remote ClickWateringCan ตรง 100% (ของเกม)
 
-----------------------------------------------------------------
--- 1) AA1 GLOBAL RUNNER
-----------------------------------------------------------------
+----------------------------------------------------------------------
+-- 1) AA1 RUNNER (GLOBAL)
+----------------------------------------------------------------------
 do
-    local Players = game:GetService("Players")
-    local Workspace = game:GetService("Workspace")
-    local LP = Players.LocalPlayer
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+    -- AA1 SAVE
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or {
         get = function(_,_,d) return d end,
         set = function() end
     }
 
     local SYSTEM_NAME = "AutoWaterCollect"
-    local BASE = ("AA1/%s/%d/%d"):format(
-        SYSTEM_NAME,
-        tonumber(game.GameId) or 0,
-        tonumber(game.PlaceId) or 0
-    )
-
-    local function K(k) return BASE .. "/" .. k end
-    local function SaveGet(k,d)
-        local ok,v = pcall(function() return SAVE.get(K(k),d) end)
+    local GAME_ID  = tonumber(game.GameId)  or 0
+    local PLACE_ID = tonumber(game.PlaceId) or 0
+    local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
+    local function K(f) return BASE_SCOPE.."/"..f end
+    local function SaveGet(f,d)
+        local ok,v = pcall(function() return SAVE.get(K(f),d) end)
         return ok and v or d
     end
-    local function SaveSet(k,v)
-        pcall(function() SAVE.set(K(k),v) end)
-    end
+    local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
     local STATE = {
-        Enabled = SaveGet("Enabled", false),
-        StepSec = 0.35,
+        Enabled  = SaveGet("Enabled", false),
+        LoopWait = SaveGet("LoopWait", 1.0), -- หน่วงต่อรอบ
     }
 
-    local function getHRP()
-        local c = LP.Character
-        return c and c:FindFirstChild("HumanoidRootPart")
-    end
-
-    local function getWateringCan()
-        return Workspace:FindFirstChild("Mutations")
-            and Workspace.Mutations:FindFirstChild("Normal")
-            and Workspace.Mutations.Normal:FindFirstChild("WateringCan")
-    end
-
+    local loopToken = 0
     local running = false
-    local token = 0
 
-    local function apply()
+    local function fireWateringCan()
+        local args = {
+            workspace:WaitForChild("Mutations")
+                :WaitForChild("Normal")
+                :WaitForChild("WateringCan")
+        }
+
+        ReplicatedStorage
+            :WaitForChild("Remotes")
+            :WaitForChild("ClickWateringCan")
+            :FireServer(unpack(args))
+    end
+
+    local function applyFromState()
         if not STATE.Enabled or running then return end
         running = true
-        token += 1
-        local my = token
+        loopToken += 1
+        local myToken = loopToken
 
         task.spawn(function()
-            while STATE.Enabled and token == my do
-                local can = getWateringCan()
-                if not can then
-                    -- ✅ WateringCan หาย = เก็บน้ำแล้ว
-                    STATE.Enabled = false
-                    SaveSet("Enabled", false)
-                    break
-                end
-
-                local hrp = getHRP()
-                local hitbox = can:FindFirstChild("HitBox")
-                if hrp and hitbox then
-                    hrp.CFrame = hitbox.CFrame + Vector3.new(0,2,0)
-                end
-
-                local cd = can:FindFirstChildOfClass("ClickDetector")
-                if cd and typeof(fireclickdetector) == "function" then
-                    fireclickdetector(cd)
-                end
-
-                task.wait(STATE.StepSec)
+            while STATE.Enabled and loopToken == myToken do
+                pcall(fireWateringCan)
+                task.wait(tonumber(STATE.LoopWait) or 1)
             end
             running = false
         end)
@@ -1150,26 +1125,28 @@ do
         STATE.Enabled = v and true or false
         SaveSet("Enabled", STATE.Enabled)
         if STATE.Enabled then
-            task.defer(apply)
+            task.defer(applyFromState)
         else
-            token += 1
+            loopToken += 1
             running = false
         end
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
     _G.UFOX_AA1[SYSTEM_NAME] = {
-        getEnabled = function() return STATE.Enabled end,
-        setEnabled = SetEnabled,
-        ensure = function() task.defer(apply) end
+        state        = STATE,
+        setEnabled   = SetEnabled,
+        getEnabled   = function() return STATE.Enabled == true end,
+        ensureRunner = function() task.defer(applyFromState) end,
     }
 
-    task.defer(apply)
+    -- auto-run ถ้าเคยเปิดสวิตช์ไว้
+    task.defer(applyFromState)
 end
 
-----------------------------------------------------------------
--- 2) UI • Model A V1 (Home)
-----------------------------------------------------------------
+----------------------------------------------------------------------
+-- 2) UI PART: Model A V1 (Home)
+----------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
     local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWaterCollect"]
@@ -1181,35 +1158,36 @@ registerRight("Home", function(scroll)
         BLACK = Color3.fromRGB(0,0,0),
     }
 
-    local function corner(o,r)
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0,r or 12)
-        c.Parent = o
-    end
-    local function stroke(o)
-        local s = Instance.new("UIStroke")
-        s.Thickness = 2
-        s.Color = THEME.GREEN
-        s.Parent = o
+    local function corner(ui,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r or 12); c.Parent=ui end
+    local function stroke(ui,t,col) local s=Instance.new("UIStroke"); s.Thickness=t or 2.2; s.Color=col or THEME.GREEN; s.Parent=ui end
+    local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
+
+    -- cleanup
+    for _,n in ipairs({"AWC_Header","AWC_Row1"}) do
+        local o = scroll:FindFirstChild(n)
+        if o then o:Destroy() end
     end
 
-    for _,n in ipairs({"AWC_Header","AWC_Row1"}) do
-        local f = scroll:FindFirstChild(n)
-        if f then f:Destroy() end
+    local list = scroll:FindFirstChildOfClass("UIListLayout")
+    if not list then
+        list = Instance.new("UIListLayout", scroll)
+        list.Padding = UDim.new(0,12)
     end
+    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 
     local base = 0
     for _,c in ipairs(scroll:GetChildren()) do
-        if c:IsA("GuiObject") then
+        if c:IsA("GuiObject") and c ~= list then
             base = math.max(base, c.LayoutOrder or 0)
         end
     end
 
+    -- Header
     local header = Instance.new("TextLabel")
     header.Name = "AWC_Header"
     header.Parent = scroll
-    header.BackgroundTransparency = 1
     header.Size = UDim2.new(1,0,0,36)
+    header.BackgroundTransparency = 1
     header.Font = Enum.Font.GothamBold
     header.TextSize = 16
     header.TextColor3 = THEME.WHITE
@@ -1217,42 +1195,64 @@ registerRight("Home", function(scroll)
     header.Text = "Auto Water Collect 💧"
     header.LayoutOrder = base + 1
 
+    -- Switch Row
     local row = Instance.new("Frame")
     row.Name = "AWC_Row1"
     row.Parent = scroll
     row.Size = UDim2.new(1,-6,0,46)
     row.BackgroundColor3 = THEME.BLACK
+    corner(row,12)
+    stroke(row,2.2,THEME.GREEN)
     row.LayoutOrder = base + 2
-    corner(row)
-    stroke(row)
 
-    local txt = Instance.new("TextLabel")
-    txt.Parent = row
-    txt.BackgroundTransparency = 1
-    txt.Position = UDim2.new(0,16,0,0)
-    txt.Size = UDim2.new(1,-120,1,0)
-    txt.Font = Enum.Font.GothamBold
-    txt.TextSize = 13
-    txt.TextColor3 = THEME.WHITE
-    txt.TextXAlignment = Enum.TextXAlignment.Left
-    txt.Text = "Auto Water Collect"
+    local lab = Instance.new("TextLabel", row)
+    lab.BackgroundTransparency = 1
+    lab.Position = UDim2.new(0,16,0,0)
+    lab.Size = UDim2.new(1,-160,1,0)
+    lab.Font = Enum.Font.GothamBold
+    lab.TextSize = 13
+    lab.TextColor3 = THEME.WHITE
+    lab.TextXAlignment = Enum.TextXAlignment.Left
+    lab.Text = "Auto Water Collect"
 
-    local btn = Instance.new("TextButton")
-    btn.Parent = row
-    btn.AnchorPoint = Vector2.new(1,0.5)
-    btn.Position = UDim2.new(1,-12,0.5,0)
-    btn.Size = UDim2.fromOffset(50,24)
+    local sw = Instance.new("Frame", row)
+    sw.AnchorPoint = Vector2.new(1,0.5)
+    sw.Position = UDim2.new(1,-12,0.5,0)
+    sw.Size = UDim2.fromOffset(52,26)
+    sw.BackgroundColor3 = THEME.BLACK
+    corner(sw,13)
+
+    local st = Instance.new("UIStroke", sw)
+    st.Thickness = 1.8
+
+    local knob = Instance.new("Frame", sw)
+    knob.Size = UDim2.fromOffset(22,22)
+    knob.Position = UDim2.new(0,2,0.5,-11)
+    knob.BackgroundColor3 = THEME.WHITE
+    corner(knob,11)
+
+    local function update(on)
+        st.Color = on and THEME.GREEN or THEME.RED
+        tween(knob,{
+            Position = UDim2.new(on and 1 or 0,on and -24 or 2,0.5,-11)
+        })
+    end
+
+    local btn = Instance.new("TextButton", sw)
+    btn.Size = UDim2.fromScale(1,1)
+    btn.BackgroundTransparency = 1
     btn.Text = ""
-    btn.BackgroundColor3 = THEME.BLACK
-    corner(btn,12)
-    stroke(btn)
 
     btn.MouseButton1Click:Connect(function()
-        if AA1 then
-            AA1.setEnabled(not AA1.getEnabled())
-            AA1.ensure()
+        local v = not (AA1 and AA1.getEnabled and AA1.getEnabled())
+        if AA1 and AA1.setEnabled then
+            AA1.setEnabled(v)
+            if v then AA1.ensureRunner() end
         end
+        update(v)
     end)
+
+    update(AA1 and AA1.getEnabled and AA1.getEnabled() or false)
 end) 
 --===== UFO HUB X • Home – Auto Claim Rewards 🎁 (Model A V1 + AA1 • PERMA LOOPS) =====
 -- Tab: Home
