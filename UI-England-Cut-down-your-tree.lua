@@ -1061,7 +1061,7 @@ end)
 -- Header : "Auto Water Collect 💧"
 -- Row 1  : "Auto Watering"             (TapButtonClick -> workspace.Plots.Plot)
 -- Row 2  : "Auto Watering Can Collect" (ClickWateringCan -> workspace.Mutations.Normal.WateringCan) [5s relay]
--- Row 3  : "Auto Water Trees"          (Equip *XP tool* -> TreeClick Invoke -> workspace.Plots.Plot.PlotContents.Tree)
+-- Row 3  : "Auto Water Trees"          (Equip *XP tool* -> TreeClick Invoke UNTIL tool disappears)
 
 ----------------------------------------------------------------------
 -- 1) AA1 RUNNER (GLOBAL) - Row1: TapButtonClick
@@ -1078,11 +1078,7 @@ do
     local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
     local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
-    local STATE = {
-        Enabled  = SaveGet("Enabled", false),
-        LoopWait = SaveGet("LoopWait", 1.0),
-    }
-
+    local STATE = { Enabled=SaveGet("Enabled", false), LoopWait=SaveGet("LoopWait", 1.0) }
     local loopToken, running = 0, false
 
     local function fireTapButton()
@@ -1095,7 +1091,6 @@ do
         running = true
         loopToken += 1
         local myToken = loopToken
-
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
                 pcall(fireTapButton)
@@ -1112,12 +1107,7 @@ do
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
-    _G.UFOX_AA1[SYSTEM_NAME] = {
-        state=STATE, setEnabled=SetEnabled,
-        getEnabled=function() return STATE.Enabled==true end,
-        ensureRunner=function() task.defer(applyFromState) end,
-    }
-
+    _G.UFOX_AA1[SYSTEM_NAME] = { state=STATE, setEnabled=SetEnabled, getEnabled=function() return STATE.Enabled==true end, ensureRunner=function() task.defer(applyFromState) end }
     task.defer(applyFromState)
 end
 
@@ -1136,17 +1126,11 @@ do
     local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
     local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
-    local STATE = {
-        Enabled  = SaveGet("Enabled", false),
-        LoopWait = SaveGet("LoopWait", 5.0), -- ✅ relay 5 วิ
-    }
-
+    local STATE = { Enabled=SaveGet("Enabled", false), LoopWait=SaveGet("LoopWait", 5.0) } -- ✅ 5 วิ
     local loopToken, running = 0, false
 
     local function fireWateringCan()
-        local args = {
-            workspace:WaitForChild("Mutations"):WaitForChild("Normal"):WaitForChild("WateringCan")
-        }
+        local args = { workspace:WaitForChild("Mutations"):WaitForChild("Normal"):WaitForChild("WateringCan") }
         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ClickWateringCan"):FireServer(unpack(args))
     end
 
@@ -1155,7 +1139,6 @@ do
         running = true
         loopToken += 1
         local myToken = loopToken
-
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
                 pcall(fireWateringCan)
@@ -1174,17 +1157,12 @@ do
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
-    _G.UFOX_AA1[SYSTEM_NAME] = {
-        state=STATE, setEnabled=SetEnabled,
-        getEnabled=function() return STATE.Enabled==true end,
-        ensureRunner=function() task.defer(applyFromState) end,
-    }
-
+    _G.UFOX_AA1[SYSTEM_NAME] = { state=STATE, setEnabled=SetEnabled, getEnabled=function() return STATE.Enabled==true end, ensureRunner=function() task.defer(applyFromState) end }
     task.defer(applyFromState)
 end
 
 ----------------------------------------------------------------------
--- 3) AA1 RUNNER (GLOBAL) - Row3: Equip XP Tool -> TreeClick Invoke
+-- 3) AA1 RUNNER (GLOBAL) - Row3: Equip XP Tool -> TreeClick UNTIL tool disappears
 ----------------------------------------------------------------------
 do
     local Players = game:GetService("Players")
@@ -1202,9 +1180,10 @@ do
     local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
     local STATE = {
-        Enabled  = SaveGet("Enabled", false),
-        LoopWait = SaveGet("LoopWait", 0.6),
-        EquipTryGap = SaveGet("EquipTryGap", 0.12),
+        Enabled      = SaveGet("Enabled", false),
+        EquipTryGap  = SaveGet("EquipTryGap", 0.12),
+        ClickSpamGap = SaveGet("ClickSpamGap", 0.10), -- ✅ รัว TreeClick ถี่ๆ
+        BetweenTools = SaveGet("BetweenTools", 0.15), -- เว้นนิดตอนเปลี่ยนอันใหม่
     }
 
     local function getChar() return LP.Character end
@@ -1216,7 +1195,6 @@ do
         return LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
     end
 
-    -- ✅ หา Tool ที่ "ลงท้ายด้วย XP" (เลขหน้าเปลี่ยนได้ ไม่สน)
     local function listXPToolsInBackpack()
         local bp = getBackpack()
         if not bp then return {} end
@@ -1229,7 +1207,7 @@ do
         return out
     end
 
-    local function isEquippedXPTool()
+    local function findEquippedXPTool()
         local ch = getChar()
         if not ch then return nil end
         for _, it in ipairs(ch:GetChildren()) do
@@ -1240,26 +1218,18 @@ do
         return nil
     end
 
-    local function ensureEquipAnyXP()
-        -- ถ้ามี XP อยู่ในมือแล้ว = ผ่าน
-        if isEquippedXPTool() then return true end
-
+    local function equipRandomXP()
         local hum = getHumanoid()
-        if not hum then return false end
+        if not hum then return nil end
 
         local tools = listXPToolsInBackpack()
-        if #tools <= 0 then
-            return false
-        end
+        if #tools == 0 then return nil end
 
-        -- สุ่ม 1 อัน แล้ว Equip
         local pick = tools[math.random(1, #tools)]
         pcall(function() hum:EquipTool(pick) end)
         task.wait(tonumber(STATE.EquipTryGap) or 0.12)
 
-        -- เงื่อนไขที่นายให้: ถ้า XP ยังอยู่ Backpack = ยังไม่ถือ / ถ้าหายจาก Backpack = ถือแล้ว
-        -- (ในทางปฏิบัติ: ถ้า equip สำเร็จ มันจะไปอยู่ Character)
-        return isEquippedXPTool() ~= nil
+        return findEquippedXPTool()
     end
 
     local function fireTreeClick()
@@ -1282,17 +1252,33 @@ do
 
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
-                -- 1) ทำให้ "ถือ XP" ให้ได้ (ถ้าถือหาย ก็สุ่มถือใหม่จนได้)
-                local okEquip = ensureEquipAnyXP()
-
-                -- 2) ถือแล้วค่อยรด/คลิกต้นไม้
-                if okEquip then
-                    pcall(fireTreeClick)
+                -- 1) ต้อง “ถือ” XP ให้ได้ก่อน
+                local tool = findEquippedXPTool()
+                if not tool then
+                    tool = equipRandomXP()
+                    if not tool then
+                        task.wait(0.2)
+                        continue
+                    end
                 end
 
-                local w = tonumber(STATE.LoopWait) or 0.6
-                if w < 0.15 then w = 0.15 end
-                task.wait(w)
+                -- 2) ถือเสร็จแล้ว -> ใช้ TreeClick รัว จนกว่า tool นี้จะ “หายไปจาก Character”
+                while STATE.Enabled and loopToken == myToken do
+                    -- ถ้าหายจาก Character แล้ว = จบ cycle นี้ ไปสุ่มอันใหม่
+                    local ch = getChar()
+                    if (not ch) or (not tool) or (tool.Parent ~= ch) then
+                        break
+                    end
+
+                    pcall(fireTreeClick)
+
+                    local gap = tonumber(STATE.ClickSpamGap) or 0.1
+                    if gap < 0.03 then gap = 0.03 end
+                    task.wait(gap)
+                end
+
+                local bt = tonumber(STATE.BetweenTools) or 0.15
+                if bt > 0 then task.wait(bt) end
             end
             running = false
         end)
@@ -1335,7 +1321,6 @@ registerRight("Home", function(scroll)
     local function stroke(ui,t,col) local s=Instance.new("UIStroke"); s.Thickness=t or 2.2; s.Color=col or THEME.GREEN; s.Parent=ui end
     local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
 
-    -- cleanup เฉพาะของระบบนี้
     for _,n in ipairs({"AWC_Header","AWC_Row1","AWC_Row2","AWC_Row3"}) do
         local o = scroll:FindFirstChild(n)
         if o then o:Destroy() end
@@ -1356,7 +1341,6 @@ registerRight("Home", function(scroll)
         end
     end
 
-    -- Header
     local header = Instance.new("TextLabel")
     header.Name = "AWC_Header"
     header.Parent = scroll
@@ -1430,7 +1414,7 @@ registerRight("Home", function(scroll)
     end
 
     local setRow1 = makeRowSwitch("AWC_Row1", base + 2, "Auto Watering", AA1_ROW1)
-    local setRow2 = makeRowSwitch("AWC_Row2", base + 3, "Auto Watering Can Collect", AA1_ROW2) -- ✅ เปลี่ยนชื่อ + รีเลย์ 5 วิอยู่ฝั่ง runner แล้ว
+    local setRow2 = makeRowSwitch("AWC_Row2", base + 3, "Auto Watering Can Collect", AA1_ROW2)
     local setRow3 = makeRowSwitch("AWC_Row3", base + 4, "Auto Water Trees", AA1_ROW3)
 
     task.defer(function()
