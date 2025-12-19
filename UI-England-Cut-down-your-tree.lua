@@ -1057,17 +1057,17 @@ registerRight("Home", function(scroll)
         end
     end)
 end)
---===== UFO HUB X • Home – Model A V1 + AA1 Auto Water Collect (2 Rows) =====
+--===== UFO HUB X • Home – Model A V1 + AA1 (3 Rows) =====
 -- Header : "Auto Water Collect 💧"
--- Row 1  : "Auto Watering"       (TapButtonClick -> workspace.Plots.Plot)
--- Row 2  : "Auto Water Collect"  (ClickWateringCan -> workspace.Mutations.Normal.WateringCan)
+-- Row 1  : "Auto Watering"             (TapButtonClick -> workspace.Plots.Plot)
+-- Row 2  : "Auto Watering Can Collect" (ClickWateringCan -> workspace.Mutations.Normal.WateringCan) [5s relay]
+-- Row 3  : "Auto Water Trees"          (Equip *XP tool* -> TreeClick Invoke -> workspace.Plots.Plot.PlotContents.Tree)
 
 ----------------------------------------------------------------------
 -- 1) AA1 RUNNER (GLOBAL) - Row1: TapButtonClick
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
     local SYSTEM_NAME = "AutoWatering_TapButtonClick"
@@ -1083,13 +1083,10 @@ do
         LoopWait = SaveGet("LoopWait", 1.0),
     }
 
-    local loopToken = 0
-    local running = false
+    local loopToken, running = 0, false
 
     local function fireTapButton()
-        local args = {
-            workspace:WaitForChild("Plots"):WaitForChild("Plot")
-        }
+        local args = { workspace:WaitForChild("Plots"):WaitForChild("Plot") }
         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TapButtonClick"):FireServer(unpack(args))
     end
 
@@ -1111,34 +1108,27 @@ do
     local function SetEnabled(v)
         STATE.Enabled = v and true or false
         SaveSet("Enabled", STATE.Enabled)
-        if STATE.Enabled then
-            task.defer(applyFromState)
-        else
-            loopToken += 1
-            running = false
-        end
+        if STATE.Enabled then task.defer(applyFromState) else loopToken += 1; running = false end
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
     _G.UFOX_AA1[SYSTEM_NAME] = {
-        state        = STATE,
-        setEnabled   = SetEnabled,
-        getEnabled   = function() return STATE.Enabled == true end,
-        ensureRunner = function() task.defer(applyFromState) end,
+        state=STATE, setEnabled=SetEnabled,
+        getEnabled=function() return STATE.Enabled==true end,
+        ensureRunner=function() task.defer(applyFromState) end,
     }
 
     task.defer(applyFromState)
 end
 
 ----------------------------------------------------------------------
--- 2) AA1 RUNNER (GLOBAL) - Row2: ClickWateringCan (ของเดิม)
+-- 2) AA1 RUNNER (GLOBAL) - Row2: ClickWateringCan (5s relay)
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
-    local SYSTEM_NAME = "AutoWaterCollect_ClickWateringCan"
+    local SYSTEM_NAME = "AutoWateringCanCollect_ClickWateringCan"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
@@ -1148,17 +1138,14 @@ do
 
     local STATE = {
         Enabled  = SaveGet("Enabled", false),
-        LoopWait = SaveGet("LoopWait", 1.0),
+        LoopWait = SaveGet("LoopWait", 5.0), -- ✅ relay 5 วิ
     }
 
-    local loopToken = 0
-    local running = false
+    local loopToken, running = 0, false
 
     local function fireWateringCan()
         local args = {
-            workspace:WaitForChild("Mutations")
-                :WaitForChild("Normal")
-                :WaitForChild("WateringCan")
+            workspace:WaitForChild("Mutations"):WaitForChild("Normal"):WaitForChild("WateringCan")
         }
         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ClickWateringCan"):FireServer(unpack(args))
     end
@@ -1172,7 +1159,9 @@ do
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
                 pcall(fireWateringCan)
-                task.wait(tonumber(STATE.LoopWait) or 1)
+                local w = tonumber(STATE.LoopWait) or 5
+                if w < 5 then w = 5 end
+                task.wait(w)
             end
             running = false
         end)
@@ -1181,33 +1170,159 @@ do
     local function SetEnabled(v)
         STATE.Enabled = v and true or false
         SaveSet("Enabled", STATE.Enabled)
-        if STATE.Enabled then
-            task.defer(applyFromState)
-        else
-            loopToken += 1
-            running = false
-        end
+        if STATE.Enabled then task.defer(applyFromState) else loopToken += 1; running = false end
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
     _G.UFOX_AA1[SYSTEM_NAME] = {
-        state        = STATE,
-        setEnabled   = SetEnabled,
-        getEnabled   = function() return STATE.Enabled == true end,
-        ensureRunner = function() task.defer(applyFromState) end,
+        state=STATE, setEnabled=SetEnabled,
+        getEnabled=function() return STATE.Enabled==true end,
+        ensureRunner=function() task.defer(applyFromState) end,
     }
 
     task.defer(applyFromState)
 end
 
 ----------------------------------------------------------------------
--- 3) UI PART: Model A V1 (Home) - Header + Row1 + Row2
+-- 3) AA1 RUNNER (GLOBAL) - Row3: Equip XP Tool -> TreeClick Invoke
+----------------------------------------------------------------------
+do
+    local Players = game:GetService("Players")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local LP = Players.LocalPlayer
+
+    local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
+
+    local SYSTEM_NAME = "AutoWaterTrees_EquipXP_TreeClick"
+    local GAME_ID  = tonumber(game.GameId)  or 0
+    local PLACE_ID = tonumber(game.PlaceId) or 0
+    local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
+    local function K(f) return BASE_SCOPE.."/"..f end
+    local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
+    local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
+
+    local STATE = {
+        Enabled  = SaveGet("Enabled", false),
+        LoopWait = SaveGet("LoopWait", 0.6),
+        EquipTryGap = SaveGet("EquipTryGap", 0.12),
+    }
+
+    local function getChar() return LP.Character end
+    local function getHumanoid()
+        local ch = getChar()
+        return ch and ch:FindFirstChildOfClass("Humanoid") or nil
+    end
+    local function getBackpack()
+        return LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
+    end
+
+    -- ✅ หา Tool ที่ "ลงท้ายด้วย XP" (เลขหน้าเปลี่ยนได้ ไม่สน)
+    local function listXPToolsInBackpack()
+        local bp = getBackpack()
+        if not bp then return {} end
+        local out = {}
+        for _, it in ipairs(bp:GetChildren()) do
+            if it:IsA("Tool") and typeof(it.Name)=="string" and it.Name:match("XP$") then
+                table.insert(out, it)
+            end
+        end
+        return out
+    end
+
+    local function isEquippedXPTool()
+        local ch = getChar()
+        if not ch then return nil end
+        for _, it in ipairs(ch:GetChildren()) do
+            if it:IsA("Tool") and typeof(it.Name)=="string" and it.Name:match("XP$") then
+                return it
+            end
+        end
+        return nil
+    end
+
+    local function ensureEquipAnyXP()
+        -- ถ้ามี XP อยู่ในมือแล้ว = ผ่าน
+        if isEquippedXPTool() then return true end
+
+        local hum = getHumanoid()
+        if not hum then return false end
+
+        local tools = listXPToolsInBackpack()
+        if #tools <= 0 then
+            return false
+        end
+
+        -- สุ่ม 1 อัน แล้ว Equip
+        local pick = tools[math.random(1, #tools)]
+        pcall(function() hum:EquipTool(pick) end)
+        task.wait(tonumber(STATE.EquipTryGap) or 0.12)
+
+        -- เงื่อนไขที่นายให้: ถ้า XP ยังอยู่ Backpack = ยังไม่ถือ / ถ้าหายจาก Backpack = ถือแล้ว
+        -- (ในทางปฏิบัติ: ถ้า equip สำเร็จ มันจะไปอยู่ Character)
+        return isEquippedXPTool() ~= nil
+    end
+
+    local function fireTreeClick()
+        local args = {
+            workspace:WaitForChild("Plots")
+                :WaitForChild("Plot")
+                :WaitForChild("PlotContents")
+                :WaitForChild("Tree")
+        }
+        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TreeClick"):InvokeServer(unpack(args))
+    end
+
+    local loopToken, running = 0, false
+
+    local function applyFromState()
+        if not STATE.Enabled or running then return end
+        running = true
+        loopToken += 1
+        local myToken = loopToken
+
+        task.spawn(function()
+            while STATE.Enabled and loopToken == myToken do
+                -- 1) ทำให้ "ถือ XP" ให้ได้ (ถ้าถือหาย ก็สุ่มถือใหม่จนได้)
+                local okEquip = ensureEquipAnyXP()
+
+                -- 2) ถือแล้วค่อยรด/คลิกต้นไม้
+                if okEquip then
+                    pcall(fireTreeClick)
+                end
+
+                local w = tonumber(STATE.LoopWait) or 0.6
+                if w < 0.15 then w = 0.15 end
+                task.wait(w)
+            end
+            running = false
+        end)
+    end
+
+    local function SetEnabled(v)
+        STATE.Enabled = v and true or false
+        SaveSet("Enabled", STATE.Enabled)
+        if STATE.Enabled then task.defer(applyFromState) else loopToken += 1; running = false end
+    end
+
+    _G.UFOX_AA1 = _G.UFOX_AA1 or {}
+    _G.UFOX_AA1[SYSTEM_NAME] = {
+        state=STATE, setEnabled=SetEnabled,
+        getEnabled=function() return STATE.Enabled==true end,
+        ensureRunner=function() task.defer(applyFromState) end,
+    }
+
+    task.defer(applyFromState)
+end
+
+----------------------------------------------------------------------
+-- 4) UI PART: Model A V1 (Home) - Header + Row1 + Row2 + Row3
 ----------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
 
     local AA1_ROW1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWatering_TapButtonClick"]
-    local AA1_ROW2 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWaterCollect_ClickWateringCan"]
+    local AA1_ROW2 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWateringCanCollect_ClickWateringCan"]
+    local AA1_ROW3 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWaterTrees_EquipXP_TreeClick"]
 
     local THEME = {
         GREEN = Color3.fromRGB(25,255,125),
@@ -1221,7 +1336,7 @@ registerRight("Home", function(scroll)
     local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
 
     -- cleanup เฉพาะของระบบนี้
-    for _,n in ipairs({"AWC_Header","AWC_Row1","AWC_Row2"}) do
+    for _,n in ipairs({"AWC_Header","AWC_Row1","AWC_Row2","AWC_Row3"}) do
         local o = scroll:FindFirstChild(n)
         if o then o:Destroy() end
     end
@@ -1314,18 +1429,18 @@ registerRight("Home", function(scroll)
         return update
     end
 
-    -- Row1 (ใหม่): TapButtonClick
     local setRow1 = makeRowSwitch("AWC_Row1", base + 2, "Auto Watering", AA1_ROW1)
+    local setRow2 = makeRowSwitch("AWC_Row2", base + 3, "Auto Watering Can Collect", AA1_ROW2) -- ✅ เปลี่ยนชื่อ + รีเลย์ 5 วิอยู่ฝั่ง runner แล้ว
+    local setRow3 = makeRowSwitch("AWC_Row3", base + 4, "Auto Water Trees", AA1_ROW3)
 
-    -- Row2 (เดิม): ClickWateringCan
-    local setRow2 = makeRowSwitch("AWC_Row2", base + 3, "Auto Water Collect", AA1_ROW2)
-
-    -- sync วิชวล + ensure runner
     task.defer(function()
         if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
         if AA1_ROW2 and AA1_ROW2.ensureRunner then AA1_ROW2.ensureRunner() end
+        if AA1_ROW3 and AA1_ROW3.ensureRunner then AA1_ROW3.ensureRunner() end
+
         if setRow1 then setRow1((AA1_ROW1 and AA1_ROW1.getEnabled and AA1_ROW1.getEnabled()) or false) end
         if setRow2 then setRow2((AA1_ROW2 and AA1_ROW2.getEnabled and AA1_ROW2.getEnabled()) or false) end
+        if setRow3 then setRow3((AA1_ROW3 and AA1_ROW3.getEnabled and AA1_ROW3.getEnabled()) or false) end
     end)
 end) 
 --===== UFO HUB X • Home – Auto Claim Rewards 🎁 (Model A V1 + AA1 • PERMA LOOPS) =====
