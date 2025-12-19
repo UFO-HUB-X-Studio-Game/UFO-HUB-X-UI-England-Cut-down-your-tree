@@ -1060,11 +1060,11 @@ end)
 --===== UFO HUB X • Home – Model A V1 + AA1 (3 Rows) =====
 -- Header : "Auto Water Collect 💧"
 -- Row 1  : "Auto Watering"             (TapButtonClick -> workspace.Plots.Plot)
--- Row 2  : "Auto Watering Can Collect" (ClickWateringCan -> Any workspace.Mutations/*/WateringCan) [5s relay + watchdog]
--- Row 3  : "Auto Water Trees"          (Equip *XP tool* -> TreeClick Invoke (NON-BLOCK) UNTIL tool disappears + watchdog)
+-- Row 2  : "Auto Watering Can Collect" (ClickWateringCan -> Any workspace.Mutations/*/WateringCan) [5s relay + watchdog + HARD RESTART]
+-- Row 3  : "Auto Water Trees"          (Equip *XP tool* -> TreeClick Invoke (NON-BLOCK) UNTIL tool disappears + watchdog + HARD RESTART)
 
 ----------------------------------------------------------------------
--- 1) AA1 RUNNER (GLOBAL) - Row1: TapButtonClick
+-- 1) AA1 RUNNER (GLOBAL) - Row1: TapButtonClick (เหมือนเดิม)
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1117,7 +1117,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 2) AA1 RUNNER (GLOBAL) - Row2: ClickWateringCan (5s relay + WATCHDOG + SPECIAL MUTATIONS)
+-- 2) AA1 RUNNER (GLOBAL) - Row2: ClickWateringCan (5s relay + WATCHDOG + HARD RESTART + SPECIAL MUTATIONS)
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1160,18 +1160,12 @@ do
         ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ClickWateringCan"):FireServer(unpack(args))
     end
 
-    local function startLoop()
-        if not STATE.Enabled or running then return end
-        running = true
-        loopToken += 1
-        local myToken = loopToken
-
+    local function startLoop(myToken)
         task.spawn(function()
-            local ok = xpcall(function()
+            xpcall(function()
                 while STATE.Enabled and loopToken == myToken do
                     local cans = getAllWateringCans()
                     if #cans > 0 then
-                        -- ✅ ยิงทุกอันที่มี (รวมพิเศษ: Shiny/Obsidian/Dark Matter/Rainbow/Gold ฯลฯ)
                         for _, can in ipairs(cans) do
                             if not (STATE.Enabled and loopToken == myToken) then break end
                             pcall(fireOneCan, can)
@@ -1185,29 +1179,42 @@ do
                 end
             end, function() end)
 
+            -- ✅ สำคัญ: ออกลูปแล้วต้องคืน running เสมอ
             running = false
         end)
     end
 
+    -- ✅ HARD RESTART: ปิดลูปเก่า + เปิดลูปใหม่ทันที (แก้อาการปิด/เปิดแล้วไม่เริ่ม)
+    local function restartLoop()
+        loopToken += 1
+        local myToken = loopToken
+        running = true
+        startLoop(myToken)
+    end
+
     local function SetEnabled(v)
-        STATE.Enabled = v and true or false
-        SaveSet("Enabled", STATE.Enabled)
-        if STATE.Enabled then
-            task.defer(startLoop)
+        v = v and true or false
+        STATE.Enabled = v
+        SaveSet("Enabled", v)
+
+        if v then
+            -- ✅ เปิด = hard restart เสมอ
+            restartLoop()
         else
+            -- ✅ ปิด = kill ลูปเดิม
             loopToken += 1
             running = false
         end
     end
 
-    -- ✅ WATCHDOG กันหยุด
+    -- ✅ WATCHDOG กันหยุด (ถ้าเปิดอยู่แต่ running หาย -> hard restart)
     local watchdogKey = "__UFOX_WD_" .. SYSTEM_NAME
     if not _G[watchdogKey] then
         _G[watchdogKey] = true
         task.spawn(function()
             while _G[watchdogKey] do
                 if STATE.Enabled and (not running) then
-                    task.defer(startLoop)
+                    restartLoop()
                 end
                 task.wait(1.0)
             end
@@ -1216,16 +1223,19 @@ do
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
     _G.UFOX_AA1[SYSTEM_NAME] = {
-        state=STATE, setEnabled=SetEnabled,
+        state=STATE,
+        setEnabled=SetEnabled,
         getEnabled=function() return STATE.Enabled==true end,
-        ensureRunner=function() task.defer(startLoop) end
+        ensureRunner=function() restartLoop() end, -- ✅ ให้ ensureRunner เป็น hard restart
     }
 
-    task.defer(startLoop)
+    if STATE.Enabled then
+        restartLoop()
+    end
 end
 
 ----------------------------------------------------------------------
--- 3) AA1 RUNNER (GLOBAL) - Row3: Equip XP Tool -> TreeClick (NON-BLOCK + TIMEOUT + WATCHDOG)
+-- 3) AA1 RUNNER (GLOBAL) - Row3: Equip XP Tool -> TreeClick (NON-BLOCK + WATCHDOG + HARD RESTART)
 ----------------------------------------------------------------------
 do
     local Players = game:GetService("Players")
@@ -1247,8 +1257,8 @@ do
         ClickSpamGap  = SaveGet("ClickSpamGap", 0.10),
         BetweenTools  = SaveGet("BetweenTools", 0.15),
         NoToolWait    = SaveGet("NoToolWait", 0.25),
-        InvokeTimeout = SaveGet("InvokeTimeout", 2.0), -- ✅ กัน Invoke ค้าง
-        MaxStallSec   = SaveGet("MaxStallSec", 6.0),   -- ✅ ถ้าไม่ “ยิงสำเร็จ/จบงาน” นานเกินนี้ รีสตาร์ทวงจร
+        InvokeTimeout = SaveGet("InvokeTimeout", 2.0), -- กัน Invoke ค้าง
+        MaxStallSec   = SaveGet("MaxStallSec", 6.0),   -- กันนิ่งนาน
     }
 
     local function getChar() return LP.Character end
@@ -1302,17 +1312,18 @@ do
     }
     local treeRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TreeClick")
 
-    -- ✅ NON-BLOCK invoke (กันค้าง)
     local inflight = false
     local lastFinish = os.clock()
 
     local function tryInvokeTree()
         if inflight then return end
         inflight = true
-        local startT = os.clock()
 
+        -- ✅ heartbeat กัน stall: แค่ “พยายามยิง” ก็ถือว่ายังทำงานอยู่
+        lastFinish = os.clock()
+
+        local startT = os.clock()
         task.spawn(function()
-            -- ปล่อยให้ค้างได้ แต่เราไม่บล็อคลูปหลัก
             pcall(function()
                 treeRemote:InvokeServer(unpack(treeArgs))
             end)
@@ -1320,30 +1331,25 @@ do
             lastFinish = os.clock()
         end)
 
-        -- timeout reset (ถ้าค้างนานเกิน)
         task.spawn(function()
             local to = tonumber(STATE.InvokeTimeout) or 2.0
             if to < 0.6 then to = 0.6 end
             task.wait(to)
             if inflight and (os.clock() - startT >= to) then
-                -- ไม่สามารถ kill thread ที่ค้างได้ แต่เราปลด inflight เพื่อให้ลองใหม่ได้
+                -- ปลดให้ลองใหม่ (ถึง thread ค้าง เราก็ไม่บล็อคลูป)
                 inflight = false
+                lastFinish = os.clock()
             end
         end)
     end
 
     local loopToken, running = 0, false
 
-    local function startLoop()
-        if not STATE.Enabled or running then return end
-        running = true
-        loopToken += 1
-        local myToken = loopToken
-
+    local function startLoop(myToken)
         task.spawn(function()
             xpcall(function()
                 while STATE.Enabled and loopToken == myToken do
-                    -- 1) ต้องถือ XP ให้ได้เสมอ
+                    -- 1) ต้องถือ XP ให้ได้
                     local tool = findEquippedXPTool()
                     if not tool then
                         tool = equipRandomXP()
@@ -1351,20 +1357,21 @@ do
                             task.wait(tonumber(STATE.NoToolWait) or 0.25)
                             continue
                         end
+                        -- ✅ เพิ่งถือได้ รีเซ็ต heartbeat กัน stall หลุด
+                        lastFinish = os.clock()
                     end
 
-                    -- 2) ถือแล้ว -> ยิง TreeClick รัว “จนกว่า tool นี้จะหายจาก Character”
+                    -- 2) ถือแล้ว -> ยิง TreeClick เรื่อยๆ จน tool หายจาก Character
                     while STATE.Enabled and loopToken == myToken do
                         local ch = getChar()
                         if (not ch) or (not tool) or (tool.Parent ~= ch) then
                             break
                         end
 
-                        -- ✅ ถ้ามันดู “นิ่ง” นานเกิน -> รีเฟรช (กันอาการเหมือนหยุด)
                         local stallMax = tonumber(STATE.MaxStallSec) or 6.0
                         if stallMax < 3 then stallMax = 3 end
                         if (os.clock() - lastFinish) > stallMax then
-                            -- รีเซ็ตวงจร: ให้ไปหา/สุ่มถือใหม่
+                            -- ✅ ถ้านิ่งนานเกิน: ออกจากวงจรเพื่อสุ่ม/ถือใหม่
                             break
                         end
 
@@ -1384,27 +1391,39 @@ do
         end)
     end
 
+    -- ✅ HARD RESTART
+    local function restartLoop()
+        loopToken += 1
+        local myToken = loopToken
+        running = true
+        inflight = false
+        lastFinish = os.clock()
+        startLoop(myToken)
+    end
+
     local function SetEnabled(v)
-        STATE.Enabled = v and true or false
-        SaveSet("Enabled", STATE.Enabled)
-        if STATE.Enabled then
-            lastFinish = os.clock()
-            task.defer(startLoop)
+        v = v and true or false
+        STATE.Enabled = v
+        SaveSet("Enabled", v)
+
+        if v then
+            restartLoop()
         else
             loopToken += 1
             running = false
             inflight = false
+            lastFinish = os.clock()
         end
     end
 
-    -- ✅ WATCHDOG กันหยุด
+    -- ✅ WATCHDOG: เปิดอยู่แต่หยุดเอง -> hard restart
     local watchdogKey = "__UFOX_WD_" .. SYSTEM_NAME
     if not _G[watchdogKey] then
         _G[watchdogKey] = true
         task.spawn(function()
             while _G[watchdogKey] do
                 if STATE.Enabled and (not running) then
-                    task.defer(startLoop)
+                    restartLoop()
                 end
                 task.wait(1.0)
             end
@@ -1413,16 +1432,19 @@ do
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
     _G.UFOX_AA1[SYSTEM_NAME] = {
-        state=STATE, setEnabled=SetEnabled,
+        state=STATE,
+        setEnabled=SetEnabled,
         getEnabled=function() return STATE.Enabled==true end,
-        ensureRunner=function() task.defer(startLoop) end
+        ensureRunner=function() restartLoop() end, -- ✅ ensureRunner = hard restart
     }
 
-    task.defer(startLoop)
+    if STATE.Enabled then
+        restartLoop()
+    end
 end
 
 ----------------------------------------------------------------------
--- 4) UI PART: Model A V1 (Home) - Header + Row1 + Row2 + Row3
+-- 4) UI PART: Model A V1 (Home) - Header + Row1 + Row2 + Row3 (เหมือนเดิม)
 ----------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
