@@ -695,18 +695,17 @@ registerRight("Settings", function(scroll) end)
 -- Header : "Auto Farm 🌾"
 -- Row 1  : "Auto Woodcutting"
 -- Row 2  : "Auto Watering"
--- Row 3  : "Auto Watering Can Collect"
--- Row 4  : "Auto Water Trees"
+-- Row 3  : "Auto Watering Can Collect"  (รวม Auto Water Trees ในสวิตช์เดียวกัน)
 --
 -- Special logic (UPDATED):
--- - Row1: swing 30 times -> cooldown 5 sec -> repeat forever
+-- - Row1: swing 50 times -> cooldown 5 sec -> repeat forever
 -- - If Row1 ON and Row3 ON:
 --      Row3 runs ONLY during Row1 cooldown 5 sec.
 -- - If Row1 OFF:
 --      Row3 runs normally (every 5s) when enabled.
--- - Row4 runs ONLY paired with Row3:
---      Row3 first, then Row4 spam TreeClick, loop forever.
--- - If Row4 toggled ON while Row3 is OFF -> auto enable Row3.
+-- - Row3 cycle:
+--      1) ClickWateringCan (Normal.WateringCan)
+--      2) แล้วตามด้วย TreeClick (Normal.Tree) รัวๆ (Auto Water Trees) วนไปเรื่อยๆ
 
 ----------------------------------------------------------------------
 -- 0) SHARED COORDINATOR (Auto Farm 🌾)
@@ -736,17 +735,12 @@ do
     function C:allowRow3(row3Enabled)
         if not row3Enabled then return false end
         if not self.woodEnabled then
-            return true -- ✅ wood OFF -> Row3 runs normally
+            return true -- wood OFF -> Row3 runs normally
         end
         return self:isCooldown() -- wood ON -> Row3 only during cooldown
     end
 
-    -- Row4 runs ONLY paired with Row3 (and after Row3 action each cycle)
-    function C:allowRow4(row4Enabled, row3Enabled)
-        return (row4Enabled == true) and (row3Enabled == true)
-    end
-
-    -- Row4 action (100% fixed remote args path)
+    -- TreeClick burst (100% fixed path)
     function C:fireWaterTreesBurst(burstCount, gap)
         local ReplicatedStorage = game:GetService("ReplicatedStorage")
         local args = {
@@ -771,7 +765,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 1) AA1 RUNNER (GLOBAL) - Row1: Auto Woodcutting (XZ warp only) + 30 hits -> cooldown 5s
+-- 1) AA1 RUNNER (GLOBAL) - Row1: Auto Woodcutting (XZ warp only) + 50 hits -> cooldown 5s
 ----------------------------------------------------------------------
 do
     local Players = game:GetService("Players")
@@ -802,7 +796,7 @@ do
         SwingSec    = SaveGet("SwingSec", 0.12),
         WarpCD      = SaveGet("WarpCD", 0.25),
 
-        HitBurst    = SaveGet("HitBurst", 30),   -- ✅ 30 hits
+        HitBurst    = SaveGet("HitBurst", 50),  -- ✅ 50 hits
         CooldownSec = SaveGet("CooldownSec", 5.0)
     }
 
@@ -952,7 +946,7 @@ do
                 if atTree and hasAxe then
                     if trySwing() then
                         hitCount += 1
-                        local burst = tonumber(STATE.HitBurst) or 30
+                        local burst = tonumber(STATE.HitBurst) or 50
                         if burst < 1 then burst = 1 end
 
                         if hitCount >= burst then
@@ -1053,16 +1047,16 @@ do
 end
 
 ----------------------------------------------------------------------
--- 3) AA1 RUNNER (GLOBAL) - Row3: Auto Watering Can Collect (5s relay) + MASTER for Row4
+-- 3) AA1 RUNNER (GLOBAL) - Row3: Auto Watering Can Collect (5s relay) + Auto Water Trees (TreeClick spam)
 --    - If Row1 ON: Row3 runs only during cooldown 5s.
 --    - If Row1 OFF: Row3 runs normally (every 5s).
---    - After Row3 action: if Row4 enabled => Row4 burst runs immediately.
+--    - Each cycle: ClickWateringCan -> TreeClick spam burst -> wait 5s -> repeat
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
-    local SYSTEM_NAME = "AutoFarm_WateringCanCollect"
+    local SYSTEM_NAME = "AutoFarm_WateringCanCollect_AND_WaterTrees"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
@@ -1073,8 +1067,8 @@ do
     local STATE = {
         Enabled      = SaveGet("Enabled", false),
         LoopWait     = SaveGet("LoopWait", 5.0), -- 5s relay
-        BurstAfter   = SaveGet("BurstAfter", 6),
-        BurstGap     = SaveGet("BurstGap", 0.08),
+        BurstAfter   = SaveGet("BurstAfter", 10), -- ✅ TreeClick รัวกี่ครั้งต่อรอบ
+        BurstGap     = SaveGet("BurstGap", 0.08), -- ✅ gap ระหว่าง Invoke
         WaitBlocked  = SaveGet("WaitBlocked", 0.15),
     }
 
@@ -1099,15 +1093,11 @@ do
                     continue
                 end
 
-                -- Row3 action first
+                -- 1) Collect can first
                 pcall(fireWateringCan)
 
-                -- Then Row4 burst (ONLY if Row4 enabled)
-                local AA1_ROW4 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WaterTrees"]
-                local row4On = (AA1_ROW4 and AA1_ROW4.getEnabled and AA1_ROW4.getEnabled()) or false
-
-                local row4Allowed = (C and C:allowRow4(row4On, STATE.Enabled)) or (row4On and STATE.Enabled)
-                if row4Allowed and C and C.fireWaterTreesBurst then
+                -- 2) Then water trees burst (100% fixed)
+                if C and C.fireWaterTreesBurst then
                     C:fireWaterTreesBurst(STATE.BurstAfter, STATE.BurstGap)
                 end
 
@@ -1136,59 +1126,14 @@ do
 end
 
 ----------------------------------------------------------------------
--- 4) AA1 RUNNER (GLOBAL) - Row4: Auto Water Trees (ENABLE FLAG ONLY)
---    - If Row4 enabled while Row3 disabled -> auto enable Row3
---    - Real work is executed by Row3 after Row3 action.
-----------------------------------------------------------------------
-do
-    local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
-
-    local SYSTEM_NAME = "AutoFarm_WaterTrees"
-    local GAME_ID  = tonumber(game.GameId)  or 0
-    local PLACE_ID = tonumber(game.PlaceId) or 0
-    local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
-    local function K(f) return BASE_SCOPE.."/"..f end
-    local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
-    local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
-
-    local STATE = { Enabled = SaveGet("Enabled", false) }
-
-    local function SetEnabled(v)
-        v = v and true or false
-        STATE.Enabled = v
-        SaveSet("Enabled", STATE.Enabled)
-
-        -- ✅ Auto enable Row3 if turning Row4 ON
-        if v then
-            local AA1_ROW3 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WateringCanCollect"]
-            if AA1_ROW3 and AA1_ROW3.getEnabled and AA1_ROW3.setEnabled then
-                if not AA1_ROW3.getEnabled() then
-                    AA1_ROW3.setEnabled(true)
-                    if AA1_ROW3.ensureRunner then AA1_ROW3.ensureRunner() end
-                end
-            end
-        end
-    end
-
-    _G.UFOX_AA1 = _G.UFOX_AA1 or {}
-    _G.UFOX_AA1[SYSTEM_NAME] = {
-        state=STATE,
-        setEnabled=SetEnabled,
-        getEnabled=function() return STATE.Enabled==true end,
-        ensureRunner=function() end,
-    }
-end
-
-----------------------------------------------------------------------
--- 5) UI PART: Model A V1 (Home) - Auto Farm 🌾 (4 Rows)
+-- 4) UI PART: Model A V1 (Home) - Auto Farm 🌾 (3 Rows)
 ----------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
 
     local AA1_WOOD = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_Woodcutting"]
     local AA1_WAT1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_Watering"]
-    local AA1_WAT2 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WateringCanCollect"]
-    local AA1_WAT3 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WaterTrees"]
+    local AA1_WAT3 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WateringCanCollect_AND_WaterTrees"]
 
     local THEME = {
         GREEN = Color3.fromRGB(25,255,125),
@@ -1201,7 +1146,7 @@ registerRight("Home", function(scroll)
     local function stroke(ui,t,col) local s=Instance.new("UIStroke"); s.Thickness=t or 2.2; s.Color=col or THEME.GREEN; s.Parent=ui end
     local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
 
-    for _,n in ipairs({"AF_Header","AF_Row1","AF_Row2","AF_Row3","AF_Row4"}) do
+    for _,n in ipairs({"AF_Header","AF_Row1","AF_Row2","AF_Row3"}) do
         local o = scroll:FindFirstChild(n)
         if o then o:Destroy() end
     end
@@ -1303,31 +1248,16 @@ registerRight("Home", function(scroll)
     end)
 
     local set2 = makeRowSwitch("AF_Row2", base + 3, "Auto Watering", AA1_WAT1)
-
-    local set3 = makeRowSwitch("AF_Row3", base + 4, "Auto Watering Can Collect", AA1_WAT2)
-
-    local set4 = makeRowSwitch("AF_Row4", base + 5, "Auto Water Trees", AA1_WAT3, function(v)
-        -- ✅ UI side: turning Row4 ON auto turns Row3 ON too (instant)
-        if v then
-            local row3 = AA1_WAT2
-            if row3 and row3.getEnabled and row3.setEnabled then
-                if not row3.getEnabled() then
-                    row3.setEnabled(true)
-                    if row3.ensureRunner then row3.ensureRunner() end
-                end
-            end
-        end
-    end)
+    local set3 = makeRowSwitch("AF_Row3", base + 4, "Auto Watering Can Collect", AA1_WAT3)
 
     task.defer(function()
         if AA1_WOOD and AA1_WOOD.ensureRunner then AA1_WOOD.ensureRunner() end
         if AA1_WAT1 and AA1_WAT1.ensureRunner then AA1_WAT1.ensureRunner() end
-        if AA1_WAT2 and AA1_WAT2.ensureRunner then AA1_WAT2.ensureRunner() end
+        if AA1_WAT3 and AA1_WAT3.ensureRunner then AA1_WAT3.ensureRunner() end
 
         if set1 then set1((AA1_WOOD and AA1_WOOD.getEnabled and AA1_WOOD.getEnabled()) or false) end
         if set2 then set2((AA1_WAT1 and AA1_WAT1.getEnabled and AA1_WAT1.getEnabled()) or false) end
-        if set3 then set3((AA1_WAT2 and AA1_WAT2.getEnabled and AA1_WAT2.getEnabled()) or false) end
-        if set4 then set4((AA1_WAT3 and AA1_WAT3.getEnabled and AA1_WAT3.getEnabled()) or false) end
+        if set3 then set3((AA1_WAT3 and AA1_WAT3.getEnabled and AA1_WAT3.getEnabled()) or false) end
     end)
 end)
 --===== UFO HUB X • SETTINGS — Smoother 🚀 (A V1 • fixed 3 rows) + Runner Save (per-map) + AA1 =====
