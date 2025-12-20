@@ -705,9 +705,9 @@ registerRight("Settings", function(scroll) end)
 --      Row4 runs ONLY during Row1 cooldown 5 sec.
 -- - If Row1 OFF and Row4 ON: Row4 runs normally.
 --
--- Row4 REQUIRED:
--- - MUST equip WateringCan first
--- - THEN invoke TreeClick with exact args
+-- Row4 REQUIRED (100%):
+-- local args = { workspace.Mutations.Normal.Tree }
+-- ReplicatedStorage.Remotes.TreeClick:InvokeServer(unpack(args))
 
 ----------------------------------------------------------------------
 -- 0) SHARED COORDINATOR (Auto Farm 🌾)
@@ -1068,13 +1068,10 @@ do
 end
 
 ----------------------------------------------------------------------
--- 4) AA1 RUNNER (GLOBAL) - Row4: Auto Water Trees = Equip WateringCan + TreeClick Invoke + RELAY with Row1
+-- 4) AA1 RUNNER (GLOBAL) - Row4: Auto Water Trees (NO EQUIP) + TreeClick(Mutations.Normal.Tree) 100% + RELAY with Row1
 ----------------------------------------------------------------------
 do
-    local Players = game:GetService("Players")
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
-    local LP = Players.LocalPlayer
-
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
     local SYSTEM_NAME = "AutoFarm_WaterTrees"
@@ -1087,70 +1084,16 @@ do
 
     local STATE = {
         Enabled         = SaveGet("Enabled", false),
-
-        WaterToolName   = SaveGet("WaterToolName", "WateringCan"), -- ✅ ชื่อที่รดน้ำ
-        EquipTryGap     = SaveGet("EquipTryGap", 0.10),
         ClickSpamGap    = SaveGet("ClickSpamGap", 0.10),
-        NoToolWait      = SaveGet("NoToolWait", 0.25),
-
         WaitWhenBlocked = SaveGet("WaitWhenBlocked", 0.20),
     }
 
-    local function getChar() return LP.Character end
-    local function getHumanoid()
-        local ch = getChar()
-        return ch and ch:FindFirstChildOfClass("Humanoid") or nil
-    end
-    local function getBackpack()
-        return LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
-    end
-
-    local function isWaterToolEquipped()
-        local ch = getChar()
-        if not ch then return false end
-        local nm = tostring(STATE.WaterToolName or "WateringCan")
-        local t = ch:FindFirstChild(nm)
-        return (t and t:IsA("Tool")) and true or false
-    end
-
-    local function findWaterToolInBackpack()
-        local bp = getBackpack()
-        if not bp then return nil end
-        local nm = tostring(STATE.WaterToolName or "WateringCan")
-        local t = bp:FindFirstChild(nm)
-        return (t and t:IsA("Tool")) and t or nil
-    end
-
-    local function ensureEquipWaterTool()
-        if isWaterToolEquipped() then return true end
-        local hum = getHumanoid()
-        if not hum then return false end
-
-        local tool = findWaterToolInBackpack()
-        if not tool then
-            return false
-        end
-
-        pcall(function()
-            -- ✅ EquipTool จะสลับจากขวานมาเป็นที่รดน้ำเอง
-            hum:EquipTool(tool)
-        end)
-        task.wait(tonumber(STATE.EquipTryGap) or 0.10)
-
-        return isWaterToolEquipped()
-    end
-
-    -- ✅ TreeClick = “รดน้ำ” (ต้องถือที่รดน้ำก่อน)
+    -- ✅ 100% ตามที่นายให้มา
     local function fireTreeClick()
         local args = {
-            workspace:WaitForChild("Plots")
-                :WaitForChild("Plot")
-                :WaitForChild("PlotContents")
-                :WaitForChild("Tree")
+            workspace:WaitForChild("Mutations"):WaitForChild("Normal"):WaitForChild("Tree")
         }
-        ReplicatedStorage:WaitForChild("Remotes")
-            :WaitForChild("TreeClick")
-            :InvokeServer(unpack(args))
+        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TreeClick"):InvokeServer(unpack(args))
     end
 
     local loopToken, running = 0, false
@@ -1164,20 +1107,12 @@ do
 
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
-                -- ✅ Relay gate (เหมือนที่นายสั่ง):
-                -- ถ้า Row1 เปิดอยู่ -> Row4 ทำงานเฉพาะช่วง cooldown 5 วิ
+                -- relay gate
                 if C and (not C:allowWaterTrees(true)) then
                     task.wait(tonumber(STATE.WaitWhenBlocked) or 0.20)
                     continue
                 end
 
-                -- ✅ ต้องถือที่รดน้ำก่อน ถึงจะ “รดน้ำได้”
-                if not ensureEquipWaterTool() then
-                    task.wait(tonumber(STATE.NoToolWait) or 0.25)
-                    continue
-                end
-
-                -- ✅ ถือแล้วค่อยกดรดน้ำ
                 pcall(fireTreeClick)
 
                 local gap = tonumber(STATE.ClickSpamGap) or 0.10
