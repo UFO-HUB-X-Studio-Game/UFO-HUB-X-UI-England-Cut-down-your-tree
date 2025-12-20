@@ -1169,7 +1169,7 @@ registerRight("Home", function(scroll)
     header.TextSize = 16
     header.TextColor3 = THEME.WHITE
     header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Text = "Auto Farm 🌾"
+    header.Text = "》》》Auto Farm ⚙️《《《"
     header.LayoutOrder = base + 1
 
     local function makeRowSwitch(rowName, order, labelText, aa1Ref, onToggle)
@@ -1241,8 +1241,8 @@ registerRight("Home", function(scroll)
         end
     end)
 
-    local set2 = makeRowSwitch("AF_Row2", base + 3, "Auto Watering", AA1_WAT1)
-    local set3 = makeRowSwitch("AF_Row3", base + 4, "Auto Watering Can Collect", AA1_WAT3)
+    local set2 = makeRowSwitch("AF_Row2", base + 3, "Auto Refill Water", AA1_WAT1)
+    local set3 = makeRowSwitch("AF_Row3", base + 4, "Auto Collect Watering Can", AA1_WAT3)
 
     task.defer(function()
         if AA1_WOOD and AA1_WOOD.ensureRunner then AA1_WOOD.ensureRunner() end
