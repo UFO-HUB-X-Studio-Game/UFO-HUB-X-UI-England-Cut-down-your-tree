@@ -691,13 +691,53 @@ end)
 
 registerRight("Home", function(scroll) end)
 registerRight("Settings", function(scroll) end)
---===== UFO HUB X • Home – Model A V1 + AA1 (GLOBAL RUNNER) Auto Woodcutting (Go To Tree HitBox + Equip Axe + Swing) =====
--- Header: "Auto Woodcutting 🪓"
--- Row1:   "Auto Woodcutting"
--- Flow loop: find Tree.HitBox -> go to hitbox (WARP ONLY IF FAR IN XZ) -> equip Axe -> ReplicatedStorage.Remotes.AxeSwing:FireServer()
+--===== UFO HUB X • Home – Model A V1 + AA1 (Auto Farm 🌾) =====
+-- Header : "Auto Farm 🌾"
+-- Row 1  : "Auto Woodcutting"
+-- Row 2  : "Auto Watering"
+-- Row 3  : "Auto Watering Can Collect"
+-- Row 4  : "Auto Water Trees"
+--
+-- Special logic:
+-- - Row1: swing 10 times -> cooldown 5 sec -> repeat. (11th is normal after cooldown)
+-- - If Row1 ON and Row4 ON:
+--      Row4 waits while Row1 is working,
+--      Row4 runs ONLY during Row1 cooldown 5 sec.
+-- - If Row1 OFF and Row4 ON: Row4 runs normally.
 
 ----------------------------------------------------------------------
--- 1) AA1 RUNNER (GLOBAL)
+-- 0) SHARED COORDINATOR (Auto Farm 🌾)
+----------------------------------------------------------------------
+do
+    _G.UFOX_AUTOFARM = _G.UFOX_AUTOFARM or {}
+    local C = _G.UFOX_AUTOFARM
+
+    -- Row1 state signals
+    C.woodEnabled = C.woodEnabled or false
+    C.cooldownUntil = C.cooldownUntil or 0
+
+    function C:isCooldown()
+        return os.clock() < (tonumber(self.cooldownUntil) or 0)
+    end
+
+    function C:setCooldown(sec)
+        sec = tonumber(sec) or 5
+        if sec < 0 then sec = 0 end
+        self.cooldownUntil = os.clock() + sec
+    end
+
+    function C:allowWaterTrees(row4Enabled)
+        -- Row4 runs if:
+        -- 1) Row4 enabled AND Row1 disabled  -> allowed
+        -- 2) Row4 enabled AND Row1 enabled   -> allowed only during cooldown
+        if not row4Enabled then return false end
+        if not self.woodEnabled then return true end
+        return self:isCooldown()
+    end
+end
+
+----------------------------------------------------------------------
+-- 1) AA1 RUNNER (GLOBAL) - Row1: Auto Woodcutting (XZ warp only) + 10 hits -> cooldown 5s
 ----------------------------------------------------------------------
 do
     local Players = game:GetService("Players")
@@ -707,7 +747,7 @@ do
 
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
-    local SYSTEM_NAME = "AutoWoodcut_GoHitBox_EquipAxe_Swing"
+    local SYSTEM_NAME = "AutoFarm_Woodcutting"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
@@ -719,19 +759,17 @@ do
     local function SaveSet(field, value) pcall(function() SAVE.set(K(field), value) end) end
 
     local STATE = {
-        Enabled   = SaveGet("Enabled", false),
+        Enabled    = SaveGet("Enabled", false),
 
-        -- ✅ Range ใช้เป็น “ไกลแค่ไหนถึงจะวาร์ป” แบบ XZ เท่านั้น (ไม่สน Y)
-        Range     = SaveGet("Range", 6),
+        Range      = SaveGet("Range", 6),        -- XZ only
+        StepSec    = SaveGet("StepSec", 0.20),
+        YOffset    = SaveGet("YOffset", 3),
+        AxeName    = SaveGet("AxeName", "Axe"),
+        SwingSec   = SaveGet("SwingSec", 0.12),
+        WarpCD     = SaveGet("WarpCD", 0.25),
 
-        StepSec   = SaveGet("StepSec", 0.20), -- loop tick
-        YOffset   = SaveGet("YOffset", 3),
-        AxeName   = SaveGet("AxeName", "Axe"),
-
-        SwingSec  = SaveGet("SwingSec", 0.12), -- ความถี่การฟัน
-
-        -- ✅ กันวาร์ปรัว
-        WarpCD    = SaveGet("WarpCD", 0.25),
+        HitBurst   = SaveGet("HitBurst", 10),    -- ✅ 10 hits
+        CooldownSec= SaveGet("CooldownSec", 5.0) -- ✅ cooldown 5s
     }
 
     local function getChar() return LP.Character end
@@ -744,21 +782,17 @@ do
         return ch and ch:FindFirstChild("HumanoidRootPart") or nil
     end
 
-    -- ✅ ระยะ XZ (ไม่สน Y)
     local function distXZ(a, b)
         local dx = a.X - b.X
         local dz = a.Z - b.Z
         return math.sqrt(dx*dx + dz*dz)
     end
 
-    -- หา HitBox ของ Tree ที่ใกล้สุด (วัดแบบ XZ)
     local function findNearestTreeHitBox()
         local hrp = getHRP()
         if not hrp then return nil end
-
         local best, bestDist = nil, math.huge
         local p = hrp.Position
-
         for _, d in ipairs(Workspace:GetDescendants()) do
             if d:IsA("Model") and d.Name == "Tree" then
                 local hb = d:FindFirstChild("HitBox")
@@ -783,31 +817,22 @@ do
         local range = tonumber(STATE.Range) or 6
         if range < 2 then range = 2 end
 
-        -- ✅ ถ้า HitBox อยู่บนหัว/ใต้ดิน แต่ XZ ใกล้ = ถือว่า “ถึงแล้ว” ไม่วาร์ป
         local dXZ = distXZ(hrp.Position, hitbox.Position)
-        if dXZ <= range then
-            return true
-        end
+        if dXZ <= range then return true end
 
-        -- ✅ ยกเว้น “ไกลจริงๆ” เท่านั้นค่อยวาร์ป
         local now = os.clock()
         local cd = tonumber(STATE.WarpCD) or 0.25
         if cd < 0.05 then cd = 0.05 end
-        if (now - lastWarp) < cd then
-            return false
-        end
+        if (now - lastWarp) < cd then return false end
         lastWarp = now
 
         local targetPos = hitbox.Position + Vector3.new(0, tonumber(STATE.YOffset) or 3, 0)
-
         pcall(function() hum:MoveTo(hitbox.Position) end)
         task.wait(0.05)
         pcall(function() hrp.CFrame = CFrame.new(targetPos) end)
-
         return false
     end
 
-    -- Equip Axe
     local function findAxeInBackpack()
         local bp = LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
         if not bp then return nil, nil end
@@ -827,24 +852,16 @@ do
 
     local function ensureEquipAxe()
         if isAxeEquipped() then return true end
-
         local hum = getHumanoid()
         if not hum then return false end
-
-        local axeTool, backpack = findAxeInBackpack()
-        if backpack and not axeTool then
-            return isAxeEquipped()
-        end
-
+        local axeTool = (select(1, findAxeInBackpack()))
         if axeTool then
             pcall(function() hum:EquipTool(axeTool) end)
             task.wait(0.08)
         end
-
         return isAxeEquipped()
     end
 
-    -- AxeSwing Remote (cache)
     local cachedSwingRemote
     local function getSwingRemote()
         if cachedSwingRemote and cachedSwingRemote.Parent then return cachedSwingRemote end
@@ -857,36 +874,40 @@ do
     local lastSwing = 0
     local function trySwing()
         local r = getSwingRemote()
-        if not r then return end
+        if not r then return false end
 
         local cd = tonumber(STATE.SwingSec) or 0.12
         if cd < 0.03 then cd = 0.03 end
 
         local now = os.clock()
-        if (now - lastSwing) < cd then return end
+        if (now - lastSwing) < cd then return false end
         lastSwing = now
 
-        pcall(function()
-            r:FireServer()
-        end)
+        local ok = pcall(function() r:FireServer() end)
+        return ok
     end
 
-    local loopToken = 0
-    local running = false
+    local loopToken, running = 0, false
+    local hitCount = 0
 
     local function applyFromState()
-        if not STATE.Enabled then
-            running = false
-            return
-        end
-        if running then return end
+        if not STATE.Enabled or running then return end
         running = true
-
         loopToken += 1
         local myToken = loopToken
 
+        local C = _G.UFOX_AUTOFARM
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
+                -- mark coordinator
+                if C then C.woodEnabled = true end
+
+                -- ✅ cooldown window (stand still)
+                if C and C:isCooldown() then
+                    task.wait(0.10)
+                    continue
+                end
+
                 local hitbox = findNearestTreeHitBox()
                 local atTree = false
                 if hitbox then
@@ -895,14 +916,31 @@ do
 
                 local hasAxe = ensureEquipAxe()
 
-                -- ฟันเฉพาะตอน “ถึงต้นไม้ + ถือขวานแล้ว”
                 if atTree and hasAxe then
-                    trySwing()
+                    if trySwing() then
+                        hitCount += 1
+                        local burst = tonumber(STATE.HitBurst) or 10
+                        if burst < 1 then burst = 1 end
+
+                        if hitCount >= burst then
+                            hitCount = 0
+                            local cdSec = tonumber(STATE.CooldownSec) or 5
+                            if cdSec < 0.2 then cdSec = 0.2 end
+                            if C then C:setCooldown(cdSec) end
+                            -- ✅ ระหว่าง cooldown ให้ Row4 มีสิทธิ์ทำงาน (ดูใน Row4 runner)
+                        end
+                    end
                 end
 
                 local step = tonumber(STATE.StepSec) or 0.20
                 if step < 0.05 then step = 0.05 end
                 task.wait(step)
+            end
+
+            -- off
+            if _G.UFOX_AUTOFARM then
+                _G.UFOX_AUTOFARM.woodEnabled = false
+                _G.UFOX_AUTOFARM.cooldownUntil = 0
             end
             running = false
         end)
@@ -912,178 +950,37 @@ do
         v = v and true or false
         STATE.Enabled = v
         SaveSet("Enabled", v)
+        if _G.UFOX_AUTOFARM then
+            _G.UFOX_AUTOFARM.woodEnabled = v
+            if not v then _G.UFOX_AUTOFARM.cooldownUntil = 0 end
+        end
         if v then
             task.defer(applyFromState)
         else
             loopToken += 1
             running = false
+            hitCount = 0
         end
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
     _G.UFOX_AA1[SYSTEM_NAME] = {
-        state        = STATE,
-        apply        = applyFromState,
-        setEnabled   = SetEnabled,
-        getEnabled   = function() return STATE.Enabled == true end,
-        ensureRunner = function() task.defer(applyFromState) end,
-        saveGet      = SaveGet,
-        saveSet      = SaveSet,
+        state=STATE, setEnabled=SetEnabled,
+        getEnabled=function() return STATE.Enabled==true end,
+        ensureRunner=function() task.defer(applyFromState) end
     }
 
     task.defer(applyFromState)
 end
 
 ----------------------------------------------------------------------
--- 2) UI PART: Model A V1 in Home (Row เดียว) + sync
-----------------------------------------------------------------------
-registerRight("Home", function(scroll)
-    local TweenService = game:GetService("TweenService")
-    local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWoodcut_GoHitBox_EquipAxe_Swing"]
-
-    local THEME = {
-        GREEN = Color3.fromRGB(25,255,125),
-        RED   = Color3.fromRGB(255,40,40),
-        WHITE = Color3.fromRGB(255,255,255),
-        BLACK = Color3.fromRGB(0,0,0),
-    }
-
-    local function corner(ui, r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r or 12); c.Parent=ui end
-    local function stroke(ui, th, col) local s=Instance.new("UIStroke"); s.Thickness=th or 2.2; s.Color=col or THEME.GREEN; s.ApplyStrokeMode=Enum.ApplyStrokeMode.Border; s.Parent=ui end
-    local function tween(o, p, d) TweenService:Create(o, TweenInfo.new(d or 0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), p):Play() end
-
-    for _, name in ipairs({"AW_Header","AW_Row1"}) do
-        local o = scroll:FindFirstChild(name)
-        if o then o:Destroy() end
-    end
-
-    local vlist = scroll:FindFirstChildOfClass("UIListLayout")
-    if not vlist then
-        vlist = Instance.new("UIListLayout")
-        vlist.Parent = scroll
-        vlist.Padding   = UDim.new(0, 12)
-        vlist.SortOrder = Enum.SortOrder.LayoutOrder
-    end
-    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-
-    local base = 0
-    for _, ch in ipairs(scroll:GetChildren()) do
-        if ch:IsA("GuiObject") and ch ~= vlist then
-            base = math.max(base, ch.LayoutOrder or 0)
-        end
-    end
-
-    local header = Instance.new("TextLabel")
-    header.Name = "AW_Header"
-    header.Parent = scroll
-    header.BackgroundTransparency = 1
-    header.Size = UDim2.new(1, 0, 0, 36)
-    header.Font = Enum.Font.GothamBold
-    header.TextSize = 16
-    header.TextColor3 = THEME.WHITE
-    header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Text = "Auto Woodcutting 🪓"
-    header.LayoutOrder = base + 1
-
-    local function makeRowSwitch(name, order, labelText, getState, setState)
-        local row = Instance.new("Frame")
-        row.Name = name
-        row.Parent = scroll
-        row.Size = UDim2.new(1, -6, 0, 46)
-        row.BackgroundColor3 = THEME.BLACK
-        corner(row, 12)
-        stroke(row, 2.2, THEME.GREEN)
-        row.LayoutOrder = order
-
-        local lab = Instance.new("TextLabel")
-        lab.Parent = row
-        lab.BackgroundTransparency = 1
-        lab.Size = UDim2.new(1, -160, 1, 0)
-        lab.Position = UDim2.new(0, 16, 0, 0)
-        lab.Font = Enum.Font.GothamBold
-        lab.TextSize = 13
-        lab.TextColor3 = THEME.WHITE
-        lab.TextXAlignment = Enum.TextXAlignment.Left
-        lab.Text = labelText
-
-        local sw = Instance.new("Frame")
-        sw.Parent = row
-        sw.AnchorPoint = Vector2.new(1,0.5)
-        sw.Position = UDim2.new(1, -12, 0.5, 0)
-        sw.Size = UDim2.fromOffset(52,26)
-        sw.BackgroundColor3 = THEME.BLACK
-        corner(sw, 13)
-
-        local swStroke = Instance.new("UIStroke")
-        swStroke.Parent = sw
-        swStroke.Thickness = 1.8
-
-        local knob = Instance.new("Frame")
-        knob.Parent = sw
-        knob.Size = UDim2.fromOffset(22,22)
-        knob.BackgroundColor3 = THEME.WHITE
-        knob.Position = UDim2.new(0,2,0.5,-11)
-        corner(knob,11)
-
-        local function update(on)
-            swStroke.Color = on and THEME.GREEN or THEME.RED
-            tween(knob, { Position = UDim2.new(on and 1 or 0, on and -24 or 2, 0.5, -11) }, 0.08)
-        end
-
-        local btn = Instance.new("TextButton")
-        btn.Parent = sw
-        btn.BackgroundTransparency = 1
-        btn.Size = UDim2.fromScale(1,1)
-        btn.Text = ""
-        btn.AutoButtonColor = false
-
-        btn.MouseButton1Click:Connect(function()
-            local new = not getState()
-            setState(new)
-            update(new)
-        end)
-
-        update(getState())
-        return update
-    end
-
-    local setVisual = makeRowSwitch(
-        "AW_Row1",
-        base + 2,
-        "Auto Woodcutting",
-        function()
-            return (AA1 and AA1.getEnabled and AA1.getEnabled()) or false
-        end,
-        function(v)
-            if AA1 and AA1.setEnabled then
-                AA1.setEnabled(v)
-                if v and AA1.ensureRunner then AA1.ensureRunner() end
-            end
-        end
-    )
-
-    task.defer(function()
-        if AA1 and AA1.ensureRunner then AA1.ensureRunner() end
-        if setVisual then
-            setVisual((AA1 and AA1.getEnabled and AA1.getEnabled()) or false)
-        end
-    end)
-end)
---===== UFO HUB X • Home – Model A V1 + AA1 (3 Rows) =====
--- Header : "Auto Water Collect 💧"
--- Row 1  : "Auto Watering"             (TapButtonClick -> workspace.Plots.Plot)
--- Row 2  : "Auto Watering Can Collect" (ClickWateringCan -> workspace.Mutations.Normal.WateringCan) [5s relay]
--- Row 3  : "Auto Water Trees"          (Equip *XP tool* -> TreeClick Invoke UNTIL tool disappears)
--- NOTE   : FIX Row3 - ถ้ามี Tool อื่น (เช่น Axe) อยู่ในมือ จะไม่พยายาม Equip และจะไม่พัง
-
-----------------------------------------------------------------------
--- 1) AA1 RUNNER (GLOBAL) - Row1: TapButtonClick
+-- 2) AA1 RUNNER (GLOBAL) - Row2: Auto Watering (TapButtonClick)
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
-    local SYSTEM_NAME = "AutoWatering_TapButtonClick"
+    local SYSTEM_NAME = "AutoFarm_Watering"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
@@ -1125,13 +1022,13 @@ do
 end
 
 ----------------------------------------------------------------------
--- 2) AA1 RUNNER (GLOBAL) - Row2: ClickWateringCan (5s relay)
+-- 3) AA1 RUNNER (GLOBAL) - Row3: Auto Watering Can Collect (5s relay)
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
-    local SYSTEM_NAME = "AutoWateringCanCollect_ClickWateringCan"
+    local SYSTEM_NAME = "AutoFarm_WateringCanCollect"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
@@ -1139,7 +1036,7 @@ do
     local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
     local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
-    local STATE = { Enabled=SaveGet("Enabled", false), LoopWait=SaveGet("LoopWait", 5.0) } -- ✅ 5 วิ
+    local STATE = { Enabled=SaveGet("Enabled", false), LoopWait=SaveGet("LoopWait", 5.0) } -- 5s
     local loopToken, running = 0, false
 
     local function fireWateringCan()
@@ -1175,7 +1072,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 3) AA1 RUNNER (GLOBAL) - Row3: Equip XP Tool -> TreeClick UNTIL tool disappears (FIX: ถ้ามีขวานอยู่ จะไม่แย่งมือ)
+-- 4) AA1 RUNNER (GLOBAL) - Row4: Auto Water Trees (XP tool -> TreeClick) + COORDINATOR RELAY WITH Row1
 ----------------------------------------------------------------------
 do
     local Players = game:GetService("Players")
@@ -1184,7 +1081,7 @@ do
 
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
-    local SYSTEM_NAME = "AutoWaterTrees_EquipXP_TreeClick"
+    local SYSTEM_NAME = "AutoFarm_WaterTrees"
     local GAME_ID  = tonumber(game.GameId)  or 0
     local PLACE_ID = tonumber(game.PlaceId) or 0
     local BASE_SCOPE = ("AA1/%s/%d/%d"):format(SYSTEM_NAME, GAME_ID, PLACE_ID)
@@ -1197,10 +1094,10 @@ do
         EquipTryGap  = SaveGet("EquipTryGap", 0.12),
         ClickSpamGap = SaveGet("ClickSpamGap", 0.10),
         BetweenTools = SaveGet("BetweenTools", 0.15),
-
-        -- ✅ เพิ่ม: ถ้ากำลังถือ Tool อื่น (เช่น Axe) ให้ถอยรอ ไม่พยายาม Equip
-        BusyHandWait = SaveGet("BusyHandWait", 0.35),
         NoToolWait   = SaveGet("NoToolWait", 0.25),
+
+        -- ✅ ตอน Row1 ทำงานอยู่ ให้ Row4 “รอ” ไม่พยายามแย่งถือของ
+        WaitWhenBlocked = SaveGet("WaitWhenBlocked", 0.20),
     }
 
     local function getChar() return LP.Character end
@@ -1235,25 +1132,7 @@ do
         return nil
     end
 
-    -- ✅ เพิ่ม: ตรวจว่ามี Tool อื่นในมืออยู่ไหม (เช่น Axe)
-    local function findAnyEquippedTool()
-        local ch = getChar()
-        if not ch then return nil end
-        for _, it in ipairs(ch:GetChildren()) do
-            if it:IsA("Tool") then
-                return it
-            end
-        end
-        return nil
-    end
-
     local function equipRandomXP()
-        -- ❗ ไม่แย่งมือ ถ้ามี Tool อื่นในมือ
-        local anyTool = findAnyEquippedTool()
-        if anyTool and not (typeof(anyTool.Name)=="string" and anyTool.Name:match("XP$")) then
-            return nil, "BUSY_HAND"
-        end
-
         local hum = getHumanoid()
         if not hum then return nil end
 
@@ -1285,32 +1164,34 @@ do
         loopToken += 1
         local myToken = loopToken
 
+        local C = _G.UFOX_AUTOFARM
+
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
-                -- 0) ถ้ามี Tool อื่นในมือ (ขวาน) -> ไม่ทำอะไร รอ ไม่พัง
-                local anyTool = findAnyEquippedTool()
-                if anyTool and not (typeof(anyTool.Name)=="string" and anyTool.Name:match("XP$")) then
-                    task.wait(tonumber(STATE.BusyHandWait) or 0.35)
+                -- ✅ coordinator gate:
+                -- if Row1 ON -> Row4 runs only during cooldown
+                if C and (not C:allowWaterTrees(true)) then
+                    task.wait(tonumber(STATE.WaitWhenBlocked) or 0.20)
                     continue
                 end
 
-                -- 1) ต้อง “ถือ” XP ให้ได้ก่อน (ถ้าไม่ได้เพราะ busy hand ก็จะโดนข้อ 0 ดักไว้แล้ว)
+                -- 1) ต้องถือ XP ให้ได้ก่อน (แต่ถ้าไม่ได้ ก็แค่รอ ไม่พัง)
                 local tool = findEquippedXPTool()
                 if not tool then
-                    local newTool, reason = equipRandomXP()
-                    tool = newTool
+                    tool = equipRandomXP()
                     if not tool then
-                        if reason == "BUSY_HAND" then
-                            task.wait(tonumber(STATE.BusyHandWait) or 0.35)
-                        else
-                            task.wait(tonumber(STATE.NoToolWait) or 0.25)
-                        end
+                        task.wait(tonumber(STATE.NoToolWait) or 0.25)
                         continue
                     end
                 end
 
-                -- 2) ถือเสร็จแล้ว -> ใช้ TreeClick รัว จนกว่า tool นี้จะ “หายไปจาก Character”
+                -- 2) ถือแล้ว -> TreeClick รัว จนกว่า tool นี้จะหายจาก Character
                 while STATE.Enabled and loopToken == myToken do
+                    -- ถ้า Row1 กลับมาทำงาน (หมด cooldown) -> ออกไป “รอ” ทันที
+                    if C and (not C:allowWaterTrees(true)) then
+                        break
+                    end
+
                     local ch = getChar()
                     if (not ch) or (not tool) or (tool.Parent ~= ch) then
                         break
@@ -1318,7 +1199,7 @@ do
 
                     pcall(fireTreeClick)
 
-                    local gap = tonumber(STATE.ClickSpamGap) or 0.1
+                    local gap = tonumber(STATE.ClickSpamGap) or 0.10
                     if gap < 0.03 then gap = 0.03 end
                     task.wait(gap)
                 end
@@ -1347,14 +1228,15 @@ do
 end
 
 ----------------------------------------------------------------------
--- 4) UI PART: Model A V1 (Home) - Header + Row1 + Row2 + Row3
+-- 5) UI PART: Model A V1 (Home) - Auto Farm 🌾 (4 Rows)
 ----------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
 
-    local AA1_ROW1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWatering_TapButtonClick"]
-    local AA1_ROW2 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWateringCanCollect_ClickWateringCan"]
-    local AA1_ROW3 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoWaterTrees_EquipXP_TreeClick"]
+    local AA1_WOOD = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_Woodcutting"]
+    local AA1_WAT1 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_Watering"]
+    local AA1_WAT2 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WateringCanCollect"]
+    local AA1_WAT3 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WaterTrees"]
 
     local THEME = {
         GREEN = Color3.fromRGB(25,255,125),
@@ -1367,7 +1249,7 @@ registerRight("Home", function(scroll)
     local function stroke(ui,t,col) local s=Instance.new("UIStroke"); s.Thickness=t or 2.2; s.Color=col or THEME.GREEN; s.Parent=ui end
     local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
 
-    for _,n in ipairs({"AWC_Header","AWC_Row1","AWC_Row2","AWC_Row3"}) do
+    for _,n in ipairs({"AF_Header","AF_Row1","AF_Row2","AF_Row3","AF_Row4"}) do
         local o = scroll:FindFirstChild(n)
         if o then o:Destroy() end
     end
@@ -1388,7 +1270,7 @@ registerRight("Home", function(scroll)
     end
 
     local header = Instance.new("TextLabel")
-    header.Name = "AWC_Header"
+    header.Name = "AF_Header"
     header.Parent = scroll
     header.Size = UDim2.new(1,0,0,36)
     header.BackgroundTransparency = 1
@@ -1396,7 +1278,7 @@ registerRight("Home", function(scroll)
     header.TextSize = 16
     header.TextColor3 = THEME.WHITE
     header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Text = "Auto Water Collect 💧"
+    header.Text = "Auto Farm 🌾"
     header.LayoutOrder = base + 1
 
     local function makeRowSwitch(rowName, order, labelText, aa1Ref)
@@ -1444,6 +1326,7 @@ registerRight("Home", function(scroll)
         btn.Size = UDim2.fromScale(1,1)
         btn.BackgroundTransparency = 1
         btn.Text = ""
+        btn.AutoButtonColor = false
 
         btn.MouseButton1Click:Connect(function()
             local cur = (aa1Ref and aa1Ref.getEnabled and aa1Ref.getEnabled()) or false
@@ -1459,20 +1342,23 @@ registerRight("Home", function(scroll)
         return update
     end
 
-    local setRow1 = makeRowSwitch("AWC_Row1", base + 2, "Auto Watering", AA1_ROW1)
-    local setRow2 = makeRowSwitch("AWC_Row2", base + 3, "Auto Watering Can Collect", AA1_ROW2)
-    local setRow3 = makeRowSwitch("AWC_Row3", base + 4, "Auto Water Trees", AA1_ROW3)
+    local set1 = makeRowSwitch("AF_Row1", base + 2, "Auto Woodcutting", AA1_WOOD)
+    local set2 = makeRowSwitch("AF_Row2", base + 3, "Auto Watering", AA1_WAT1)
+    local set3 = makeRowSwitch("AF_Row3", base + 4, "Auto Watering Can Collect", AA1_WAT2)
+    local set4 = makeRowSwitch("AF_Row4", base + 5, "Auto Water Trees", AA1_WAT3)
 
     task.defer(function()
-        if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
-        if AA1_ROW2 and AA1_ROW2.ensureRunner then AA1_ROW2.ensureRunner() end
-        if AA1_ROW3 and AA1_ROW3.ensureRunner then AA1_ROW3.ensureRunner() end
+        if AA1_WOOD and AA1_WOOD.ensureRunner then AA1_WOOD.ensureRunner() end
+        if AA1_WAT1 and AA1_WAT1.ensureRunner then AA1_WAT1.ensureRunner() end
+        if AA1_WAT2 and AA1_WAT2.ensureRunner then AA1_WAT2.ensureRunner() end
+        if AA1_WAT3 and AA1_WAT3.ensureRunner then AA1_WAT3.ensureRunner() end
 
-        if setRow1 then setRow1((AA1_ROW1 and AA1_ROW1.getEnabled and AA1_ROW1.getEnabled()) or false) end
-        if setRow2 then setRow2((AA1_ROW2 and AA1_ROW2.getEnabled and AA1_ROW2.getEnabled()) or false) end
-        if setRow3 then setRow3((AA1_ROW3 and AA1_ROW3.getEnabled and AA1_ROW3.getEnabled()) or false) end
+        if set1 then set1((AA1_WOOD and AA1_WOOD.getEnabled and AA1_WOOD.getEnabled()) or false) end
+        if set2 then set2((AA1_WAT1 and AA1_WAT1.getEnabled and AA1_WAT1.getEnabled()) or false) end
+        if set3 then set3((AA1_WAT2 and AA1_WAT2.getEnabled and AA1_WAT2.getEnabled()) or false) end
+        if set4 then set4((AA1_WAT3 and AA1_WAT3.getEnabled and AA1_WAT3.getEnabled()) or false) end
     end)
-end) 
+end)
 --===== UFO HUB X • SETTINGS — Smoother 🚀 (A V1 • fixed 3 rows) + Runner Save (per-map) + AA1 =====
 registerRight("Settings", function(scroll)
     local TweenService = game:GetService("TweenService")
