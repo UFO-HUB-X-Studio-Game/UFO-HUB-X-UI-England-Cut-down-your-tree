@@ -699,14 +699,14 @@ registerRight("Settings", function(scroll) end)
 -- Row 4  : "Auto Water Trees"
 --
 -- Special logic:
--- - Row1: swing 10 times -> cooldown 5 sec -> repeat.
--- - If Row1 ON and Row4 ON:
---      Row4 waits while Row1 is working,
---      Row4 runs ONLY during Row1 cooldown 5 sec.
--- - If Row1 OFF and Row4 ON: Row4 runs normally.
+-- - Row1: swing 10 times -> cooldown 5 sec -> repeat forever
+-- - If Row1 ON and Row3 ON:
+--      Row3 runs ONLY during Row1 cooldown 5 sec.
+-- - Row4 runs together with Row3:
+--      Row3 first, then Row4 spam TreeClick, loop forever.
 --
--- Row4 REQUIRED (100%):
--- local args = { workspace.Mutations.Normal.Tree }
+-- Row4 MUST use this 100%:
+-- args = { workspace.Mutations.Normal.Tree }
 -- ReplicatedStorage.Remotes.TreeClick:InvokeServer(unpack(args))
 
 ----------------------------------------------------------------------
@@ -729,10 +729,44 @@ do
         self.cooldownUntil = os.clock() + sec
     end
 
-    function C:allowWaterTrees(row4Enabled)
-        if not row4Enabled then return false end
+    function C:clearCooldown()
+        self.cooldownUntil = 0
+    end
+
+    -- Row3 allowed?
+    function C:allowRow3(row3Enabled)
+        if not row3Enabled then return false end
         if not self.woodEnabled then return true end
         return self:isCooldown()
+    end
+
+    -- Row4 runs ONLY paired with Row3 (and after Row3 action each cycle)
+    -- Row4 itself has no independent enable gate besides Row4Enabled.
+    function C:allowRow4(row4Enabled, row3Enabled)
+        return (row4Enabled == true) and (row3Enabled == true)
+    end
+
+    -- Row4 action (100% fixed remote args path)
+    function C:fireWaterTreesBurst(burstCount, gap)
+        local ReplicatedStorage = game:GetService("ReplicatedStorage")
+        local args = {
+            workspace:WaitForChild("Mutations")
+                :WaitForChild("Normal")
+                :WaitForChild("Tree")
+        }
+        local remote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TreeClick")
+
+        local n = tonumber(burstCount) or 6
+        if n < 1 then n = 1 end
+        local g = tonumber(gap) or 0.08
+        if g < 0.03 then g = 0.03 end
+
+        for i = 1, n do
+            pcall(function()
+                remote:InvokeServer(unpack(args))
+            end)
+            task.wait(g)
+        end
     end
 end
 
@@ -760,14 +794,16 @@ do
 
     local STATE = {
         Enabled     = SaveGet("Enabled", false),
-        Range       = SaveGet("Range", 6),
+
+        Range       = SaveGet("Range", 6),      -- XZ only
         StepSec     = SaveGet("StepSec", 0.20),
         YOffset     = SaveGet("YOffset", 3),
         AxeName     = SaveGet("AxeName", "Axe"),
         SwingSec    = SaveGet("SwingSec", 0.12),
         WarpCD      = SaveGet("WarpCD", 0.25),
-        HitBurst    = SaveGet("HitBurst", 10),
-        CooldownSec = SaveGet("CooldownSec", 5.0)
+
+        HitBurst    = SaveGet("HitBurst", 10),    -- 10 hits
+        CooldownSec = SaveGet("CooldownSec", 5.0) -- cooldown 5s
     }
 
     local function getChar() return LP.Character end
@@ -816,7 +852,9 @@ do
         if range < 2 then range = 2 end
 
         local dXZ = distXZ(hrp.Position, hitbox.Position)
-        if dXZ <= range then return true end
+        if dXZ <= range then
+            return true
+        end
 
         local now = os.clock()
         local cd = tonumber(STATE.WarpCD) or 0.25
@@ -831,20 +869,20 @@ do
         return false
     end
 
-    local function findAxeInBackpack()
-        local bp = LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
-        if not bp then return nil end
-        local axeName = tostring(STATE.AxeName or "Axe")
-        local t = bp:FindFirstChild(axeName)
-        return (t and t:IsA("Tool")) and t or nil
-    end
-
     local function isAxeEquipped()
         local ch = getChar()
         if not ch then return false end
         local axeName = tostring(STATE.AxeName or "Axe")
         local t = ch:FindFirstChild(axeName)
         return (t and t:IsA("Tool")) and true or false
+    end
+
+    local function findAxeInBackpack()
+        local bp = LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
+        if not bp then return nil end
+        local axeName = tostring(STATE.AxeName or "Axe")
+        local t = bp:FindFirstChild(axeName)
+        return (t and t:IsA("Tool")) and t or nil
     end
 
     local function ensureEquipAxe()
@@ -880,7 +918,8 @@ do
         if (now - lastSwing) < cd then return false end
         lastSwing = now
 
-        return pcall(function() r:FireServer() end)
+        local ok = pcall(function() r:FireServer() end)
+        return ok
     end
 
     local loopToken, running = 0, false
@@ -893,11 +932,11 @@ do
         local myToken = loopToken
 
         local C = _G.UFOX_AUTOFARM
-
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
                 if C then C.woodEnabled = true end
 
+                -- cooldown: stand still
                 if C and C:isCooldown() then
                     task.wait(0.10)
                     continue
@@ -933,9 +972,8 @@ do
 
             if _G.UFOX_AUTOFARM then
                 _G.UFOX_AUTOFARM.woodEnabled = false
-                _G.UFOX_AUTOFARM.cooldownUntil = 0
+                _G.UFOX_AUTOFARM:clearCooldown()
             end
-
             running = false
         end)
     end
@@ -944,12 +982,10 @@ do
         v = v and true or false
         STATE.Enabled = v
         SaveSet("Enabled", v)
-
         if _G.UFOX_AUTOFARM then
             _G.UFOX_AUTOFARM.woodEnabled = v
-            if not v then _G.UFOX_AUTOFARM.cooldownUntil = 0 end
+            if not v then _G.UFOX_AUTOFARM:clearCooldown() end
         end
-
         if v then
             task.defer(applyFromState)
         else
@@ -1018,7 +1054,8 @@ do
 end
 
 ----------------------------------------------------------------------
--- 3) AA1 RUNNER (GLOBAL) - Row3: Auto Watering Can Collect (5s relay)
+-- 3) AA1 RUNNER (GLOBAL) - Row3: Auto Watering Can Collect (5s relay) + MASTER for Row4
+--    Row3 waits for Row1 cooldown if Row1 enabled.
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1032,7 +1069,14 @@ do
     local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
     local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
-    local STATE = { Enabled=SaveGet("Enabled", false), LoopWait=SaveGet("LoopWait", 5.0) }
+    local STATE = {
+        Enabled      = SaveGet("Enabled", false),
+        LoopWait     = SaveGet("LoopWait", 5.0), -- 5s relay
+        BurstAfter   = SaveGet("BurstAfter", 6),  -- Row4 burst count after Row3 each cycle
+        BurstGap     = SaveGet("BurstGap", 0.08), -- Row4 gap
+        WaitBlocked  = SaveGet("WaitBlocked", 0.15), -- wait when Row1 blocks (not cooldown)
+    }
+
     local loopToken, running = 0, false
 
     local function fireWateringCan()
@@ -1045,9 +1089,28 @@ do
         running = true
         loopToken += 1
         local myToken = loopToken
+
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
+                -- Gate: If Row1 enabled => Row3 runs ONLY during cooldown
+                local C = _G.UFOX_AUTOFARM
+                if C and (not C:allowRow3(true)) then
+                    task.wait(tonumber(STATE.WaitBlocked) or 0.15)
+                    continue
+                end
+
+                -- Row3 action first
                 pcall(fireWateringCan)
+
+                -- Then Row4 burst (only if Row4 enabled too)
+                local AA1_ROW4 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WaterTrees"]
+                local row4On = (AA1_ROW4 and AA1_ROW4.getEnabled and AA1_ROW4.getEnabled()) or false
+                local row4Allowed = C and C:allowRow4(row4On, STATE.Enabled) or (row4On and STATE.Enabled)
+
+                if row4Allowed and C and C.fireWaterTreesBurst then
+                    C:fireWaterTreesBurst(STATE.BurstAfter, STATE.BurstGap)
+                end
+
                 local w = tonumber(STATE.LoopWait) or 5
                 if w < 5 then w = 5 end
                 task.wait(w)
@@ -1063,15 +1126,20 @@ do
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
-    _G.UFOX_AA1[SYSTEM_NAME] = { state=STATE, setEnabled=SetEnabled, getEnabled=function() return STATE.Enabled==true end, ensureRunner=function() task.defer(applyFromState) end }
+    _G.UFOX_AA1[SYSTEM_NAME] = {
+        state=STATE, setEnabled=SetEnabled,
+        getEnabled=function() return STATE.Enabled==true end,
+        ensureRunner=function() task.defer(applyFromState) end
+    }
+
     task.defer(applyFromState)
 end
 
 ----------------------------------------------------------------------
--- 4) AA1 RUNNER (GLOBAL) - Row4: Auto Water Trees (NO EQUIP) + TreeClick(Mutations.Normal.Tree) 100% + RELAY with Row1
+-- 4) AA1 RUNNER (GLOBAL) - Row4: Auto Water Trees (ENABLE FLAG ONLY)
+--    Real work is executed by Row3 (MASTER) after Row3 action.
 ----------------------------------------------------------------------
 do
-    local ReplicatedStorage = game:GetService("ReplicatedStorage")
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
 
     local SYSTEM_NAME = "AutoFarm_WaterTrees"
@@ -1082,61 +1150,20 @@ do
     local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
     local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
-    local STATE = {
-        Enabled         = SaveGet("Enabled", false),
-        ClickSpamGap    = SaveGet("ClickSpamGap", 0.10),
-        WaitWhenBlocked = SaveGet("WaitWhenBlocked", 0.20),
-    }
-
-    -- ✅ 100% ตามที่นายให้มา
-    local function fireTreeClick()
-        local args = {
-            workspace:WaitForChild("Mutations"):WaitForChild("Normal"):WaitForChild("Tree")
-        }
-        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TreeClick"):InvokeServer(unpack(args))
-    end
-
-    local loopToken, running = 0, false
-
-    local function applyFromState()
-        if not STATE.Enabled or running then return end
-        running = true
-        loopToken += 1
-        local myToken = loopToken
-        local C = _G.UFOX_AUTOFARM
-
-        task.spawn(function()
-            while STATE.Enabled and loopToken == myToken do
-                -- relay gate
-                if C and (not C:allowWaterTrees(true)) then
-                    task.wait(tonumber(STATE.WaitWhenBlocked) or 0.20)
-                    continue
-                end
-
-                pcall(fireTreeClick)
-
-                local gap = tonumber(STATE.ClickSpamGap) or 0.10
-                if gap < 0.03 then gap = 0.03 end
-                task.wait(gap)
-            end
-            running = false
-        end)
-    end
+    local STATE = { Enabled = SaveGet("Enabled", false) }
 
     local function SetEnabled(v)
         STATE.Enabled = v and true or false
         SaveSet("Enabled", STATE.Enabled)
-        if STATE.Enabled then task.defer(applyFromState) else loopToken += 1; running = false end
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
     _G.UFOX_AA1[SYSTEM_NAME] = {
-        state=STATE, setEnabled=SetEnabled,
+        state=STATE,
+        setEnabled=SetEnabled,
         getEnabled=function() return STATE.Enabled==true end,
-        ensureRunner=function() task.defer(applyFromState) end,
+        ensureRunner=function() end, -- no loop
     }
-
-    task.defer(applyFromState)
 end
 
 ----------------------------------------------------------------------
@@ -1193,7 +1220,7 @@ registerRight("Home", function(scroll)
     header.Text = "Auto Farm 🌾"
     header.LayoutOrder = base + 1
 
-    local function makeRowSwitch(rowName, order, labelText, aa1Ref)
+    local function makeRowSwitch(rowName, order, labelText, aa1Ref, onToggle)
         local row = Instance.new("Frame")
         row.Name = rowName
         row.Parent = scroll
@@ -1245,6 +1272,7 @@ registerRight("Home", function(scroll)
             local v = not cur
             if aa1Ref and aa1Ref.setEnabled then
                 aa1Ref.setEnabled(v)
+                if onToggle then pcall(onToggle, v) end
                 if v and aa1Ref.ensureRunner then aa1Ref.ensureRunner() end
             end
             update(v)
@@ -1254,7 +1282,12 @@ registerRight("Home", function(scroll)
         return update
     end
 
-    local set1 = makeRowSwitch("AF_Row1", base + 2, "Auto Woodcutting", AA1_WOOD)
+    local set1 = makeRowSwitch("AF_Row1", base + 2, "Auto Woodcutting", AA1_WOOD, function(v)
+        if _G.UFOX_AUTOFARM then
+            _G.UFOX_AUTOFARM.woodEnabled = v
+            if not v then _G.UFOX_AUTOFARM:clearCooldown() end
+        end
+    end)
     local set2 = makeRowSwitch("AF_Row2", base + 3, "Auto Watering", AA1_WAT1)
     local set3 = makeRowSwitch("AF_Row3", base + 4, "Auto Watering Can Collect", AA1_WAT2)
     local set4 = makeRowSwitch("AF_Row4", base + 5, "Auto Water Trees", AA1_WAT3)
@@ -1263,7 +1296,7 @@ registerRight("Home", function(scroll)
         if AA1_WOOD and AA1_WOOD.ensureRunner then AA1_WOOD.ensureRunner() end
         if AA1_WAT1 and AA1_WAT1.ensureRunner then AA1_WAT1.ensureRunner() end
         if AA1_WAT2 and AA1_WAT2.ensureRunner then AA1_WAT2.ensureRunner() end
-        if AA1_WAT3 and AA1_WAT3.ensureRunner then AA1_WAT3.ensureRunner() end
+        -- Row4 no loop; nothing to ensureRunner
 
         if set1 then set1((AA1_WOOD and AA1_WOOD.getEnabled and AA1_WOOD.getEnabled()) or false) end
         if set2 then set2((AA1_WAT1 and AA1_WAT1.getEnabled and AA1_WAT1.getEnabled()) or false) end
