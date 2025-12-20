@@ -697,15 +697,11 @@ registerRight("Settings", function(scroll) end)
 -- Row 2  : "Auto Watering"
 -- Row 3  : "Auto Watering Can Collect"  (รวม Auto Water Trees ในสวิตช์เดียวกัน)
 --
--- Special logic (UPDATED):
--- - Row1: swing 50 times -> cooldown 5 sec -> repeat forever
--- - If Row1 ON and Row3 ON:
---      Row3 runs ONLY during Row1 cooldown 5 sec.
--- - If Row1 OFF:
---      Row3 runs normally (every 5s) when enabled.
--- - Row3 cycle:
---      1) ClickWateringCan (Normal.WateringCan)
---      2) แล้วตามด้วย TreeClick (Normal.Tree) รัวๆ (Auto Water Trees) วนไปเรื่อยๆ
+-- UPDATED:
+-- - Row1: swing 50 times -> cooldown 2 sec -> repeat
+-- - If Row1 ON and Row3 ON: Row3 runs ONLY during Row1 cooldown 2 sec.
+-- - If Row1 OFF and Row3 ON: Row3 runs normally (every 5s).
+-- - Row3 cycle: ClickWateringCan -> TreeClick (Normal.Tree) burst -> wait 5s -> repeat
 
 ----------------------------------------------------------------------
 -- 0) SHARED COORDINATOR (Auto Farm 🌾)
@@ -722,7 +718,7 @@ do
     end
 
     function C:setCooldown(sec)
-        sec = tonumber(sec) or 5
+        sec = tonumber(sec) or 2
         if sec < 0 then sec = 0 end
         self.cooldownUntil = os.clock() + sec
     end
@@ -731,27 +727,26 @@ do
         self.cooldownUntil = 0
     end
 
-    -- Row3 allowed?
     function C:allowRow3(row3Enabled)
         if not row3Enabled then return false end
         if not self.woodEnabled then
-            return true -- wood OFF -> Row3 runs normally
+            return true -- ✅ Row1 OFF -> Row3 ทำงานได้ปกติ
         end
-        return self:isCooldown() -- wood ON -> Row3 only during cooldown
+        return self:isCooldown() -- ✅ Row1 ON -> Row3 ทำงานเฉพาะช่วง cooldown
     end
 
-    -- TreeClick burst (100% fixed path)
+    -- ✅ TreeClick burst (Normal.Tree) 100%
     function C:fireWaterTreesBurst(burstCount, gap)
         local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
         local args = {
-            workspace:WaitForChild("Mutations")
-                :WaitForChild("Normal")
-                :WaitForChild("Tree")
+            workspace:WaitForChild("Mutations"):WaitForChild("Normal"):WaitForChild("Tree")
         }
         local remote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TreeClick")
 
         local n = tonumber(burstCount) or 6
         if n < 1 then n = 1 end
+
         local g = tonumber(gap) or 0.08
         if g < 0.03 then g = 0.03 end
 
@@ -765,7 +760,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 1) AA1 RUNNER (GLOBAL) - Row1: Auto Woodcutting (XZ warp only) + 50 hits -> cooldown 5s
+-- 1) AA1 RUNNER (GLOBAL) - Row1: Auto Woodcutting (XZ warp only) + 50 hits -> cooldown 2s
 ----------------------------------------------------------------------
 do
     local Players = game:GetService("Players")
@@ -797,7 +792,7 @@ do
         WarpCD      = SaveGet("WarpCD", 0.25),
 
         HitBurst    = SaveGet("HitBurst", 50),  -- ✅ 50 hits
-        CooldownSec = SaveGet("CooldownSec", 5.0)
+        CooldownSec = SaveGet("CooldownSec", 2.0) -- ✅ 2 วิ
     }
 
     local function getChar() return LP.Character end
@@ -931,7 +926,7 @@ do
                 if C then C.woodEnabled = true end
 
                 if C and C:isCooldown() then
-                    task.wait(0.10)
+                    task.wait(0.05)
                     continue
                 end
 
@@ -951,8 +946,8 @@ do
 
                         if hitCount >= burst then
                             hitCount = 0
-                            local cdSec = tonumber(STATE.CooldownSec) or 5
-                            if cdSec < 0.2 then cdSec = 0.2 end
+                            local cdSec = tonumber(STATE.CooldownSec) or 2
+                            if cdSec < 0.1 then cdSec = 0.1 end
                             if C then C:setCooldown(cdSec) end
                         end
                     end
@@ -1047,10 +1042,9 @@ do
 end
 
 ----------------------------------------------------------------------
--- 3) AA1 RUNNER (GLOBAL) - Row3: Auto Watering Can Collect (5s relay) + Auto Water Trees (TreeClick spam)
---    - If Row1 ON: Row3 runs only during cooldown 5s.
---    - If Row1 OFF: Row3 runs normally (every 5s).
---    - Each cycle: ClickWateringCan -> TreeClick spam burst -> wait 5s -> repeat
+-- 3) AA1 RUNNER (GLOBAL) - Row3: Auto Watering Can Collect (5s relay) + TreeClick (Normal.Tree)
+--    - If Row1 ON: Row3 runs only during cooldown 2s.
+--    - If Row1 OFF: Row3 runs normally.
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1066,10 +1060,10 @@ do
 
     local STATE = {
         Enabled      = SaveGet("Enabled", false),
-        LoopWait     = SaveGet("LoopWait", 5.0), -- 5s relay
-        BurstAfter   = SaveGet("BurstAfter", 10), -- ✅ TreeClick รัวกี่ครั้งต่อรอบ
-        BurstGap     = SaveGet("BurstGap", 0.08), -- ✅ gap ระหว่าง Invoke
-        WaitBlocked  = SaveGet("WaitBlocked", 0.15),
+        LoopWait     = SaveGet("LoopWait", 5.0), -- 5s relay (รอบการเก็บ + รด)
+        BurstAfter   = SaveGet("BurstAfter", 10),
+        BurstGap     = SaveGet("BurstGap", 0.08),
+        WaitBlocked  = SaveGet("WaitBlocked", 0.10),
     }
 
     local loopToken, running = 0, false
@@ -1089,20 +1083,20 @@ do
             while STATE.Enabled and loopToken == myToken do
                 local C = _G.UFOX_AUTOFARM
                 if C and (not C:allowRow3(true)) then
-                    task.wait(tonumber(STATE.WaitBlocked) or 0.15)
+                    task.wait(tonumber(STATE.WaitBlocked) or 0.10)
                     continue
                 end
 
                 -- 1) Collect can first
                 pcall(fireWateringCan)
 
-                -- 2) Then water trees burst (100% fixed)
+                -- 2) Then water trees burst (✅ ใช้ Normal.Tree 100%)
                 if C and C.fireWaterTreesBurst then
                     C:fireWaterTreesBurst(STATE.BurstAfter, STATE.BurstGap)
                 end
 
                 local w = tonumber(STATE.LoopWait) or 5
-                if w < 5 then w = 5 end
+                if w < 0.2 then w = 0.2 end
                 task.wait(w)
             end
             running = false
