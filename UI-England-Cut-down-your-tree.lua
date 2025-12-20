@@ -699,11 +699,15 @@ registerRight("Settings", function(scroll) end)
 -- Row 4  : "Auto Water Trees"
 --
 -- Special logic:
--- - Row1: swing 10 times -> cooldown 5 sec -> repeat. (11th is normal after cooldown)
+-- - Row1: swing 10 times -> cooldown 5 sec -> repeat.
 -- - If Row1 ON and Row4 ON:
 --      Row4 waits while Row1 is working,
 --      Row4 runs ONLY during Row1 cooldown 5 sec.
 -- - If Row1 OFF and Row4 ON: Row4 runs normally.
+--
+-- Row4 REQUIRED:
+-- - MUST equip WateringCan first
+-- - THEN invoke TreeClick with exact args
 
 ----------------------------------------------------------------------
 -- 0) SHARED COORDINATOR (Auto Farm 🌾)
@@ -712,7 +716,6 @@ do
     _G.UFOX_AUTOFARM = _G.UFOX_AUTOFARM or {}
     local C = _G.UFOX_AUTOFARM
 
-    -- Row1 state signals
     C.woodEnabled = C.woodEnabled or false
     C.cooldownUntil = C.cooldownUntil or 0
 
@@ -727,9 +730,6 @@ do
     end
 
     function C:allowWaterTrees(row4Enabled)
-        -- Row4 runs if:
-        -- 1) Row4 enabled AND Row1 disabled  -> allowed
-        -- 2) Row4 enabled AND Row1 enabled   -> allowed only during cooldown
         if not row4Enabled then return false end
         if not self.woodEnabled then return true end
         return self:isCooldown()
@@ -759,17 +759,15 @@ do
     local function SaveSet(field, value) pcall(function() SAVE.set(K(field), value) end) end
 
     local STATE = {
-        Enabled    = SaveGet("Enabled", false),
-
-        Range      = SaveGet("Range", 6),        -- XZ only
-        StepSec    = SaveGet("StepSec", 0.20),
-        YOffset    = SaveGet("YOffset", 3),
-        AxeName    = SaveGet("AxeName", "Axe"),
-        SwingSec   = SaveGet("SwingSec", 0.12),
-        WarpCD     = SaveGet("WarpCD", 0.25),
-
-        HitBurst   = SaveGet("HitBurst", 10),    -- ✅ 10 hits
-        CooldownSec= SaveGet("CooldownSec", 5.0) -- ✅ cooldown 5s
+        Enabled     = SaveGet("Enabled", false),
+        Range       = SaveGet("Range", 6),
+        StepSec     = SaveGet("StepSec", 0.20),
+        YOffset     = SaveGet("YOffset", 3),
+        AxeName     = SaveGet("AxeName", "Axe"),
+        SwingSec    = SaveGet("SwingSec", 0.12),
+        WarpCD      = SaveGet("WarpCD", 0.25),
+        HitBurst    = SaveGet("HitBurst", 10),
+        CooldownSec = SaveGet("CooldownSec", 5.0)
     }
 
     local function getChar() return LP.Character end
@@ -835,11 +833,10 @@ do
 
     local function findAxeInBackpack()
         local bp = LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
-        if not bp then return nil, nil end
+        if not bp then return nil end
         local axeName = tostring(STATE.AxeName or "Axe")
         local t = bp:FindFirstChild(axeName)
-        if t and t:IsA("Tool") then return t, bp end
-        return nil, bp
+        return (t and t:IsA("Tool")) and t or nil
     end
 
     local function isAxeEquipped()
@@ -854,7 +851,7 @@ do
         if isAxeEquipped() then return true end
         local hum = getHumanoid()
         if not hum then return false end
-        local axeTool = (select(1, findAxeInBackpack()))
+        local axeTool = findAxeInBackpack()
         if axeTool then
             pcall(function() hum:EquipTool(axeTool) end)
             task.wait(0.08)
@@ -883,8 +880,7 @@ do
         if (now - lastSwing) < cd then return false end
         lastSwing = now
 
-        local ok = pcall(function() r:FireServer() end)
-        return ok
+        return pcall(function() r:FireServer() end)
     end
 
     local loopToken, running = 0, false
@@ -897,12 +893,11 @@ do
         local myToken = loopToken
 
         local C = _G.UFOX_AUTOFARM
+
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
-                -- mark coordinator
                 if C then C.woodEnabled = true end
 
-                -- ✅ cooldown window (stand still)
                 if C and C:isCooldown() then
                     task.wait(0.10)
                     continue
@@ -927,7 +922,6 @@ do
                             local cdSec = tonumber(STATE.CooldownSec) or 5
                             if cdSec < 0.2 then cdSec = 0.2 end
                             if C then C:setCooldown(cdSec) end
-                            -- ✅ ระหว่าง cooldown ให้ Row4 มีสิทธิ์ทำงาน (ดูใน Row4 runner)
                         end
                     end
                 end
@@ -937,11 +931,11 @@ do
                 task.wait(step)
             end
 
-            -- off
             if _G.UFOX_AUTOFARM then
                 _G.UFOX_AUTOFARM.woodEnabled = false
                 _G.UFOX_AUTOFARM.cooldownUntil = 0
             end
+
             running = false
         end)
     end
@@ -950,10 +944,12 @@ do
         v = v and true or false
         STATE.Enabled = v
         SaveSet("Enabled", v)
+
         if _G.UFOX_AUTOFARM then
             _G.UFOX_AUTOFARM.woodEnabled = v
             if not v then _G.UFOX_AUTOFARM.cooldownUntil = 0 end
         end
+
         if v then
             task.defer(applyFromState)
         else
@@ -1036,7 +1032,7 @@ do
     local function SaveGet(f,d) local ok,v=pcall(function() return SAVE.get(K(f),d) end); return ok and v or d end
     local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
-    local STATE = { Enabled=SaveGet("Enabled", false), LoopWait=SaveGet("LoopWait", 5.0) } -- 5s
+    local STATE = { Enabled=SaveGet("Enabled", false), LoopWait=SaveGet("LoopWait", 5.0) }
     local loopToken, running = 0, false
 
     local function fireWateringCan()
@@ -1072,7 +1068,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 4) AA1 RUNNER (GLOBAL) - Row4: Auto Water Trees (XP tool -> TreeClick) + COORDINATOR RELAY WITH Row1
+-- 4) AA1 RUNNER (GLOBAL) - Row4: Auto Water Trees = Equip WateringCan + TreeClick Invoke + RELAY with Row1
 ----------------------------------------------------------------------
 do
     local Players = game:GetService("Players")
@@ -1090,13 +1086,13 @@ do
     local function SaveSet(f,v) pcall(function() SAVE.set(K(f),v) end) end
 
     local STATE = {
-        Enabled      = SaveGet("Enabled", false),
-        EquipTryGap  = SaveGet("EquipTryGap", 0.12),
-        ClickSpamGap = SaveGet("ClickSpamGap", 0.10),
-        BetweenTools = SaveGet("BetweenTools", 0.15),
-        NoToolWait   = SaveGet("NoToolWait", 0.25),
+        Enabled         = SaveGet("Enabled", false),
 
-        -- ✅ ตอน Row1 ทำงานอยู่ ให้ Row4 “รอ” ไม่พยายามแย่งถือของ
+        WaterToolName   = SaveGet("WaterToolName", "WateringCan"), -- ✅ ชื่อที่รดน้ำ
+        EquipTryGap     = SaveGet("EquipTryGap", 0.10),
+        ClickSpamGap    = SaveGet("ClickSpamGap", 0.10),
+        NoToolWait      = SaveGet("NoToolWait", 0.25),
+
         WaitWhenBlocked = SaveGet("WaitWhenBlocked", 0.20),
     }
 
@@ -1109,43 +1105,42 @@ do
         return LP:FindFirstChildOfClass("Backpack") or LP:FindFirstChild("Backpack")
     end
 
-    local function listXPToolsInBackpack()
-        local bp = getBackpack()
-        if not bp then return {} end
-        local out = {}
-        for _, it in ipairs(bp:GetChildren()) do
-            if it:IsA("Tool") and typeof(it.Name)=="string" and it.Name:match("XP$") then
-                table.insert(out, it)
-            end
-        end
-        return out
-    end
-
-    local function findEquippedXPTool()
+    local function isWaterToolEquipped()
         local ch = getChar()
-        if not ch then return nil end
-        for _, it in ipairs(ch:GetChildren()) do
-            if it:IsA("Tool") and typeof(it.Name)=="string" and it.Name:match("XP$") then
-                return it
-            end
-        end
-        return nil
+        if not ch then return false end
+        local nm = tostring(STATE.WaterToolName or "WateringCan")
+        local t = ch:FindFirstChild(nm)
+        return (t and t:IsA("Tool")) and true or false
     end
 
-    local function equipRandomXP()
+    local function findWaterToolInBackpack()
+        local bp = getBackpack()
+        if not bp then return nil end
+        local nm = tostring(STATE.WaterToolName or "WateringCan")
+        local t = bp:FindFirstChild(nm)
+        return (t and t:IsA("Tool")) and t or nil
+    end
+
+    local function ensureEquipWaterTool()
+        if isWaterToolEquipped() then return true end
         local hum = getHumanoid()
-        if not hum then return nil end
+        if not hum then return false end
 
-        local tools = listXPToolsInBackpack()
-        if #tools == 0 then return nil end
+        local tool = findWaterToolInBackpack()
+        if not tool then
+            return false
+        end
 
-        local pick = tools[math.random(1, #tools)]
-        pcall(function() hum:EquipTool(pick) end)
-        task.wait(tonumber(STATE.EquipTryGap) or 0.12)
+        pcall(function()
+            -- ✅ EquipTool จะสลับจากขวานมาเป็นที่รดน้ำเอง
+            hum:EquipTool(tool)
+        end)
+        task.wait(tonumber(STATE.EquipTryGap) or 0.10)
 
-        return findEquippedXPTool()
+        return isWaterToolEquipped()
     end
 
+    -- ✅ TreeClick = “รดน้ำ” (ต้องถือที่รดน้ำก่อน)
     local function fireTreeClick()
         local args = {
             workspace:WaitForChild("Plots")
@@ -1153,7 +1148,9 @@ do
                 :WaitForChild("PlotContents")
                 :WaitForChild("Tree")
         }
-        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("TreeClick"):InvokeServer(unpack(args))
+        ReplicatedStorage:WaitForChild("Remotes")
+            :WaitForChild("TreeClick")
+            :InvokeServer(unpack(args))
     end
 
     local loopToken, running = 0, false
@@ -1163,49 +1160,29 @@ do
         running = true
         loopToken += 1
         local myToken = loopToken
-
         local C = _G.UFOX_AUTOFARM
 
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
-                -- ✅ coordinator gate:
-                -- if Row1 ON -> Row4 runs only during cooldown
+                -- ✅ Relay gate (เหมือนที่นายสั่ง):
+                -- ถ้า Row1 เปิดอยู่ -> Row4 ทำงานเฉพาะช่วง cooldown 5 วิ
                 if C and (not C:allowWaterTrees(true)) then
                     task.wait(tonumber(STATE.WaitWhenBlocked) or 0.20)
                     continue
                 end
 
-                -- 1) ต้องถือ XP ให้ได้ก่อน (แต่ถ้าไม่ได้ ก็แค่รอ ไม่พัง)
-                local tool = findEquippedXPTool()
-                if not tool then
-                    tool = equipRandomXP()
-                    if not tool then
-                        task.wait(tonumber(STATE.NoToolWait) or 0.25)
-                        continue
-                    end
+                -- ✅ ต้องถือที่รดน้ำก่อน ถึงจะ “รดน้ำได้”
+                if not ensureEquipWaterTool() then
+                    task.wait(tonumber(STATE.NoToolWait) or 0.25)
+                    continue
                 end
 
-                -- 2) ถือแล้ว -> TreeClick รัว จนกว่า tool นี้จะหายจาก Character
-                while STATE.Enabled and loopToken == myToken do
-                    -- ถ้า Row1 กลับมาทำงาน (หมด cooldown) -> ออกไป “รอ” ทันที
-                    if C and (not C:allowWaterTrees(true)) then
-                        break
-                    end
+                -- ✅ ถือแล้วค่อยกดรดน้ำ
+                pcall(fireTreeClick)
 
-                    local ch = getChar()
-                    if (not ch) or (not tool) or (tool.Parent ~= ch) then
-                        break
-                    end
-
-                    pcall(fireTreeClick)
-
-                    local gap = tonumber(STATE.ClickSpamGap) or 0.10
-                    if gap < 0.03 then gap = 0.03 end
-                    task.wait(gap)
-                end
-
-                local bt = tonumber(STATE.BetweenTools) or 0.15
-                if bt > 0 then task.wait(bt) end
+                local gap = tonumber(STATE.ClickSpamGap) or 0.10
+                if gap < 0.03 then gap = 0.03 end
+                task.wait(gap)
             end
             running = false
         end)
