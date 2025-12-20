@@ -691,10 +691,10 @@ end)
 
 registerRight("Home", function(scroll) end)
 registerRight("Settings", function(scroll) end)
- --===== UFO HUB X • Home – Model A V1 + AA1 (GLOBAL RUNNER) Auto Woodcutting (Go To Tree HitBox + Equip Axe + Swing) =====
+--===== UFO HUB X • Home – Model A V1 + AA1 (GLOBAL RUNNER) Auto Woodcutting (Go To Tree HitBox + Equip Axe + Swing) =====
 -- Header: "Auto Woodcutting 🪓"
 -- Row1:   "Auto Woodcutting"
--- Flow loop: find Tree.HitBox -> go to hitbox -> equip Axe -> ReplicatedStorage.Remotes.AxeSwing:FireServer()
+-- Flow loop: find Tree.HitBox -> go to hitbox (WARP ONLY IF FAR IN XZ) -> equip Axe -> ReplicatedStorage.Remotes.AxeSwing:FireServer()
 
 ----------------------------------------------------------------------
 -- 1) AA1 RUNNER (GLOBAL)
@@ -720,12 +720,18 @@ do
 
     local STATE = {
         Enabled   = SaveGet("Enabled", false),
+
+        -- ✅ Range ใช้เป็น “ไกลแค่ไหนถึงจะวาร์ป” แบบ XZ เท่านั้น (ไม่สน Y)
         Range     = SaveGet("Range", 6),
+
         StepSec   = SaveGet("StepSec", 0.20), -- loop tick
         YOffset   = SaveGet("YOffset", 3),
         AxeName   = SaveGet("AxeName", "Axe"),
 
-        SwingSec  = SaveGet("SwingSec", 0.12), -- ✅ ความถี่การฟัน (กันสแปม)
+        SwingSec  = SaveGet("SwingSec", 0.12), -- ความถี่การฟัน
+
+        -- ✅ กันวาร์ปรัว
+        WarpCD    = SaveGet("WarpCD", 0.25),
     }
 
     local function getChar() return LP.Character end
@@ -738,17 +744,26 @@ do
         return ch and ch:FindFirstChild("HumanoidRootPart") or nil
     end
 
-    -- หา HitBox ของ Tree ที่ใกล้สุด
+    -- ✅ ระยะ XZ (ไม่สน Y)
+    local function distXZ(a, b)
+        local dx = a.X - b.X
+        local dz = a.Z - b.Z
+        return math.sqrt(dx*dx + dz*dz)
+    end
+
+    -- หา HitBox ของ Tree ที่ใกล้สุด (วัดแบบ XZ)
     local function findNearestTreeHitBox()
         local hrp = getHRP()
         if not hrp then return nil end
 
         local best, bestDist = nil, math.huge
+        local p = hrp.Position
+
         for _, d in ipairs(Workspace:GetDescendants()) do
             if d:IsA("Model") and d.Name == "Tree" then
                 local hb = d:FindFirstChild("HitBox")
                 if hb and hb:IsA("BasePart") then
-                    local dist = (hb.Position - hrp.Position).Magnitude
+                    local dist = distXZ(hb.Position, p)
                     if dist < bestDist then
                         bestDist = dist
                         best = hb
@@ -759,6 +774,7 @@ do
         return best
     end
 
+    local lastWarp = 0
     local function goToHitBox(hitbox)
         local hrp = getHRP()
         local hum = getHumanoid()
@@ -767,10 +783,23 @@ do
         local range = tonumber(STATE.Range) or 6
         if range < 2 then range = 2 end
 
-        local dist = (hrp.Position - hitbox.Position).Magnitude
-        if dist <= range then return true end
+        -- ✅ ถ้า HitBox อยู่บนหัว/ใต้ดิน แต่ XZ ใกล้ = ถือว่า “ถึงแล้ว” ไม่วาร์ป
+        local dXZ = distXZ(hrp.Position, hitbox.Position)
+        if dXZ <= range then
+            return true
+        end
+
+        -- ✅ ยกเว้น “ไกลจริงๆ” เท่านั้นค่อยวาร์ป
+        local now = os.clock()
+        local cd = tonumber(STATE.WarpCD) or 0.25
+        if cd < 0.05 then cd = 0.05 end
+        if (now - lastWarp) < cd then
+            return false
+        end
+        lastWarp = now
 
         local targetPos = hitbox.Position + Vector3.new(0, tonumber(STATE.YOffset) or 3, 0)
+
         pcall(function() hum:MoveTo(hitbox.Position) end)
         task.wait(0.05)
         pcall(function() hrp.CFrame = CFrame.new(targetPos) end)
@@ -815,7 +844,7 @@ do
         return isAxeEquipped()
     end
 
-    -- ✅ AxeSwing Remote (cache)
+    -- AxeSwing Remote (cache)
     local cachedSwingRemote
     local function getSwingRemote()
         if cachedSwingRemote and cachedSwingRemote.Parent then return cachedSwingRemote end
@@ -866,7 +895,7 @@ do
 
                 local hasAxe = ensureEquipAxe()
 
-                -- ✅ ฟันเฉพาะตอน “ถึงต้นไม้ + ถือขวานแล้ว”
+                -- ฟันเฉพาะตอน “ถึงต้นไม้ + ถือขวานแล้ว”
                 if atTree and hasAxe then
                     trySwing()
                 end
