@@ -698,16 +698,15 @@ registerRight("Settings", function(scroll) end)
 -- Row 3  : "Auto Watering Can Collect"
 -- Row 4  : "Auto Water Trees"
 --
--- Special logic:
--- - Row1: swing 10 times -> cooldown 5 sec -> repeat forever
+-- Special logic (UPDATED):
+-- - Row1: swing 30 times -> cooldown 5 sec -> repeat forever
 -- - If Row1 ON and Row3 ON:
 --      Row3 runs ONLY during Row1 cooldown 5 sec.
--- - Row4 runs together with Row3:
+-- - If Row1 OFF:
+--      Row3 runs normally (every 5s) when enabled.
+-- - Row4 runs ONLY paired with Row3:
 --      Row3 first, then Row4 spam TreeClick, loop forever.
---
--- Row4 MUST use this 100%:
--- args = { workspace.Mutations.Normal.Tree }
--- ReplicatedStorage.Remotes.TreeClick:InvokeServer(unpack(args))
+-- - If Row4 toggled ON while Row3 is OFF -> auto enable Row3.
 
 ----------------------------------------------------------------------
 -- 0) SHARED COORDINATOR (Auto Farm 🌾)
@@ -736,12 +735,13 @@ do
     -- Row3 allowed?
     function C:allowRow3(row3Enabled)
         if not row3Enabled then return false end
-        if not self.woodEnabled then return true end
-        return self:isCooldown()
+        if not self.woodEnabled then
+            return true -- ✅ wood OFF -> Row3 runs normally
+        end
+        return self:isCooldown() -- wood ON -> Row3 only during cooldown
     end
 
     -- Row4 runs ONLY paired with Row3 (and after Row3 action each cycle)
-    -- Row4 itself has no independent enable gate besides Row4Enabled.
     function C:allowRow4(row4Enabled, row3Enabled)
         return (row4Enabled == true) and (row3Enabled == true)
     end
@@ -771,7 +771,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 1) AA1 RUNNER (GLOBAL) - Row1: Auto Woodcutting (XZ warp only) + 10 hits -> cooldown 5s
+-- 1) AA1 RUNNER (GLOBAL) - Row1: Auto Woodcutting (XZ warp only) + 30 hits -> cooldown 5s
 ----------------------------------------------------------------------
 do
     local Players = game:GetService("Players")
@@ -802,8 +802,8 @@ do
         SwingSec    = SaveGet("SwingSec", 0.12),
         WarpCD      = SaveGet("WarpCD", 0.25),
 
-        HitBurst    = SaveGet("HitBurst", 10),    -- 10 hits
-        CooldownSec = SaveGet("CooldownSec", 5.0) -- cooldown 5s
+        HitBurst    = SaveGet("HitBurst", 30),   -- ✅ 30 hits
+        CooldownSec = SaveGet("CooldownSec", 5.0)
     }
 
     local function getChar() return LP.Character end
@@ -936,7 +936,6 @@ do
             while STATE.Enabled and loopToken == myToken do
                 if C then C.woodEnabled = true end
 
-                -- cooldown: stand still
                 if C and C:isCooldown() then
                     task.wait(0.10)
                     continue
@@ -953,7 +952,7 @@ do
                 if atTree and hasAxe then
                     if trySwing() then
                         hitCount += 1
-                        local burst = tonumber(STATE.HitBurst) or 10
+                        local burst = tonumber(STATE.HitBurst) or 30
                         if burst < 1 then burst = 1 end
 
                         if hitCount >= burst then
@@ -1055,7 +1054,9 @@ end
 
 ----------------------------------------------------------------------
 -- 3) AA1 RUNNER (GLOBAL) - Row3: Auto Watering Can Collect (5s relay) + MASTER for Row4
---    Row3 waits for Row1 cooldown if Row1 enabled.
+--    - If Row1 ON: Row3 runs only during cooldown 5s.
+--    - If Row1 OFF: Row3 runs normally (every 5s).
+--    - After Row3 action: if Row4 enabled => Row4 burst runs immediately.
 ----------------------------------------------------------------------
 do
     local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -1072,9 +1073,9 @@ do
     local STATE = {
         Enabled      = SaveGet("Enabled", false),
         LoopWait     = SaveGet("LoopWait", 5.0), -- 5s relay
-        BurstAfter   = SaveGet("BurstAfter", 6),  -- Row4 burst count after Row3 each cycle
-        BurstGap     = SaveGet("BurstGap", 0.08), -- Row4 gap
-        WaitBlocked  = SaveGet("WaitBlocked", 0.15), -- wait when Row1 blocks (not cooldown)
+        BurstAfter   = SaveGet("BurstAfter", 6),
+        BurstGap     = SaveGet("BurstGap", 0.08),
+        WaitBlocked  = SaveGet("WaitBlocked", 0.15),
     }
 
     local loopToken, running = 0, false
@@ -1092,7 +1093,6 @@ do
 
         task.spawn(function()
             while STATE.Enabled and loopToken == myToken do
-                -- Gate: If Row1 enabled => Row3 runs ONLY during cooldown
                 local C = _G.UFOX_AUTOFARM
                 if C and (not C:allowRow3(true)) then
                     task.wait(tonumber(STATE.WaitBlocked) or 0.15)
@@ -1102,11 +1102,11 @@ do
                 -- Row3 action first
                 pcall(fireWateringCan)
 
-                -- Then Row4 burst (only if Row4 enabled too)
+                -- Then Row4 burst (ONLY if Row4 enabled)
                 local AA1_ROW4 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WaterTrees"]
                 local row4On = (AA1_ROW4 and AA1_ROW4.getEnabled and AA1_ROW4.getEnabled()) or false
-                local row4Allowed = C and C:allowRow4(row4On, STATE.Enabled) or (row4On and STATE.Enabled)
 
+                local row4Allowed = (C and C:allowRow4(row4On, STATE.Enabled)) or (row4On and STATE.Enabled)
                 if row4Allowed and C and C.fireWaterTreesBurst then
                     C:fireWaterTreesBurst(STATE.BurstAfter, STATE.BurstGap)
                 end
@@ -1137,7 +1137,8 @@ end
 
 ----------------------------------------------------------------------
 -- 4) AA1 RUNNER (GLOBAL) - Row4: Auto Water Trees (ENABLE FLAG ONLY)
---    Real work is executed by Row3 (MASTER) after Row3 action.
+--    - If Row4 enabled while Row3 disabled -> auto enable Row3
+--    - Real work is executed by Row3 after Row3 action.
 ----------------------------------------------------------------------
 do
     local SAVE = (getgenv and getgenv().UFOX_SAVE) or { get=function(_,_,d) return d end, set=function() end }
@@ -1153,8 +1154,20 @@ do
     local STATE = { Enabled = SaveGet("Enabled", false) }
 
     local function SetEnabled(v)
-        STATE.Enabled = v and true or false
+        v = v and true or false
+        STATE.Enabled = v
         SaveSet("Enabled", STATE.Enabled)
+
+        -- ✅ Auto enable Row3 if turning Row4 ON
+        if v then
+            local AA1_ROW3 = _G.UFOX_AA1 and _G.UFOX_AA1["AutoFarm_WateringCanCollect"]
+            if AA1_ROW3 and AA1_ROW3.getEnabled and AA1_ROW3.setEnabled then
+                if not AA1_ROW3.getEnabled() then
+                    AA1_ROW3.setEnabled(true)
+                    if AA1_ROW3.ensureRunner then AA1_ROW3.ensureRunner() end
+                end
+            end
+        end
     end
 
     _G.UFOX_AA1 = _G.UFOX_AA1 or {}
@@ -1162,7 +1175,7 @@ do
         state=STATE,
         setEnabled=SetEnabled,
         getEnabled=function() return STATE.Enabled==true end,
-        ensureRunner=function() end, -- no loop
+        ensureRunner=function() end,
     }
 end
 
@@ -1288,15 +1301,28 @@ registerRight("Home", function(scroll)
             if not v then _G.UFOX_AUTOFARM:clearCooldown() end
         end
     end)
+
     local set2 = makeRowSwitch("AF_Row2", base + 3, "Auto Watering", AA1_WAT1)
+
     local set3 = makeRowSwitch("AF_Row3", base + 4, "Auto Watering Can Collect", AA1_WAT2)
-    local set4 = makeRowSwitch("AF_Row4", base + 5, "Auto Water Trees", AA1_WAT3)
+
+    local set4 = makeRowSwitch("AF_Row4", base + 5, "Auto Water Trees", AA1_WAT3, function(v)
+        -- ✅ UI side: turning Row4 ON auto turns Row3 ON too (instant)
+        if v then
+            local row3 = AA1_WAT2
+            if row3 and row3.getEnabled and row3.setEnabled then
+                if not row3.getEnabled() then
+                    row3.setEnabled(true)
+                    if row3.ensureRunner then row3.ensureRunner() end
+                end
+            end
+        end
+    end)
 
     task.defer(function()
         if AA1_WOOD and AA1_WOOD.ensureRunner then AA1_WOOD.ensureRunner() end
         if AA1_WAT1 and AA1_WAT1.ensureRunner then AA1_WAT1.ensureRunner() end
         if AA1_WAT2 and AA1_WAT2.ensureRunner then AA1_WAT2.ensureRunner() end
-        -- Row4 no loop; nothing to ensureRunner
 
         if set1 then set1((AA1_WOOD and AA1_WOOD.getEnabled and AA1_WOOD.getEnabled()) or false) end
         if set2 then set2((AA1_WAT1 and AA1_WAT1.getEnabled and AA1_WAT1.getEnabled()) or false) end
